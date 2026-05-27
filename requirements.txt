@@ -1,0 +1,7 @@
+PySide6>=6.11
+ytmusicapi>=1.12
+yt-dlp>=2026.3
+requests>=2.34
+pyttsx3>=2.99
+pywebview>=6.2
+SQLAlchemy>=2.0
