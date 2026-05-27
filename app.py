@@ -22,9 +22,9 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    llm_service = LocalLLMClient()
-    music_service = YTMusicStreamer()
     auth_service = GoogleAuthService()
+    llm_service = LocalLLMClient()
+    music_service = YTMusicStreamer(auth_service=auth_service)
 
     window = DJMainWindow(
         llm_service=llm_service,

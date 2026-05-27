@@ -15,6 +15,9 @@ dist/
 
 # dotenv environment variable files
 .env
+browser.json
+client_secret.json
+onda_dj.db
 
 # Virtual environments
 .venv

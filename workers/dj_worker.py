@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import time
 from typing import List, Optional
 
 import pyttsx3
@@ -25,6 +26,7 @@ class VoiceEngine:
         try:
             self.engine.say(comment)
             self.engine.runAndWait()
+            time.sleep(0.05)
             return True
         except Exception:
             return False
@@ -37,6 +39,9 @@ class DJWorkerThread(QThread):
     dj_speaking = Signal(str)
     finished_signal = Signal()
     pause_state_changed = Signal(bool)
+    track_finished = Signal()
+    shuffle_toggled = Signal(bool)
+    repeat_toggled = Signal(bool)
 
     def __init__(self, initial_query: str, llm_service, music_service, parent=None):
         super().__init__(parent)
@@ -51,23 +56,28 @@ class DJWorkerThread(QThread):
         self.user_updated_context = False
         self.history_stack: List[str] = []
         self.process = None
+        self._shuffle = False
+        self._repeat = False
+        self._volume = 80
 
     # ---- Thread entry point ----
 
     def run(self):
-        _pythoncom = None
+        _pythoncom_module = None
         try:
-            import pythoncom as _pythoncom
-            _pythoncom.CoInitialize()
+            import pythoncom as _pythoncom_module
+            _pythoncom_module.CoInitialize()
         except ImportError:
             pass
 
+        voice_engine = VoiceEngine()
+
         try:
-            self._dj_loop()
+            self._dj_loop(voice_engine)
         finally:
-            if _pythoncom:
+            if _pythoncom_module:
                 try:
-                    _pythoncom.CoUninitialize()
+                    _pythoncom_module.CoUninitialize()
                 except Exception:
                     pass
 
@@ -113,15 +123,7 @@ class DJWorkerThread(QThread):
     # ---- Voice helper ----
 
     def _speak(self, voice_engine: VoiceEngine, text: str):
-        if sys.platform == "win32":
-            try:
-                import pythoncom
-                pythoncom.CoInitialize()
-                voice_engine.speak_comment(text)
-            finally:
-                pythoncom.CoUninitialize()
-        else:
-            voice_engine.speak_comment(text)
+        voice_engine.speak_comment(text)
 
     # ---- mpv playback ----
 
@@ -157,15 +159,15 @@ class DJWorkerThread(QThread):
                 self.msleep(500)
 
             self.process = None
+            self.track_finished.emit()
         except FileNotFoundError:
             self.log_message.emit("mpv executable not found.")
             self.process = None
+            self.track_finished.emit()
 
     # ---- Main loop ----
 
-    def _dj_loop(self):
-        voice_engine = VoiceEngine()
-
+    def _dj_loop(self, voice_engine: VoiceEngine):
         while True:
             if self.isInterruptionRequested():
                 break
@@ -240,7 +242,7 @@ class DJWorkerThread(QThread):
     def toggle_pause_process(self):
         if self.process and self.process.poll() is None:
             try:
-                self.process.stdin.write("p\r\n")
+                self.process.stdin.write("cycle pause\n")
                 self.process.stdin.flush()
                 self.is_paused = not self.is_paused
                 self.pause_state_changed.emit(self.is_paused)
@@ -259,6 +261,25 @@ class DJWorkerThread(QThread):
             self.skip_requested = True
             return self.current_query
         return None
+
+    def set_volume(self, value: int):
+        self._volume = max(0, min(100, value))
+        if self.process and self.process.poll() is None:
+            try:
+                self.process.stdin.write(f"set volume {self._volume}\n")
+                self.process.stdin.flush()
+            except Exception as e:
+                self.log_message.emit(f"[VOLUME ERROR] {e}")
+
+    def toggle_shuffle(self) -> bool:
+        self._shuffle = not self._shuffle
+        self.shuffle_toggled.emit(self._shuffle)
+        return self._shuffle
+
+    def toggle_repeat(self) -> bool:
+        self._repeat = not self._repeat
+        self.repeat_toggled.emit(self._repeat)
+        return self._repeat
 
     def update_query(self, new_query: str) -> bool:
         if new_query and new_query.strip():
