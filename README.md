@@ -325,14 +325,6 @@ Describe detalladamente:
 
 ---
 
-# 📄 Licencia
-
-Este proyecto está distribuido bajo la licencia MIT.
-
-Puedes modificarlo, redistribuirlo y adaptarlo respetando los términos de la licencia.
-
----
-
 # ❤️ Créditos
 
 Desarrollado para crear una experiencia musical inteligente, fluida y completamente local utilizando IA moderna y tecnologías open-source.
