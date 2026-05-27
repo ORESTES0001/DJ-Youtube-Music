@@ -6,31 +6,64 @@ import requests
 
 LOCAL_LLM_ENDPOINT = "http://192.168.1.28:1234/v1/chat/completions"
 
-SYSTEM_PROMPT = """Eres "Onda", un DJ virtual experto en curaduría musical. Tu objetivo es crear transiciones perfectas.
-REGLAS:
-1. Tu respuesta DEBE ser estrictamente un objeto JSON válido.
-2. Formato esperado: {"comentario_dj": "...", "siguiente_cancion": "...", "artista": "...", "termino_busqueda_yt": "..."}"""
+SYSTEM_PROMPT_TEMPLATE = """You are 'QueNota?', an elite AI music curator for {user}.
+Your task is to analyze the user's request and their [USER_CONTEXT], then determine the exact song and artist to play.
+
+[USER_CONTEXT]
+{user_context}
+
+RULES:
+1. If the user asks for a mood/vibe (e.g., "algo que me gusta", "pon algo suave"), YOU MUST pick a specific, real song from the [USER_CONTEXT] history above.
+2. If the user asks for an artist explicitly (e.g., "lo mas reciente de Juanes"), set the search term to find that specific artist.
+3. NEVER put the user's raw instruction into the 'musica_elegida' field.
+
+FORMAT: You must output a valid JSON containing exactly these keys:
+{{
+  "razonamiento_interno": "Briefly explain your logic here first.",
+  "musica_elegida": "Artist Name - Song Title",
+  "comentario_personalizado": "Hola {user}... (your presentation of the track)",
+  "termino_busqueda_yt": "Keywords to search on YouTube"
+}}
+
+EXAMPLES:
+User Instruction: "Pon algo que me gusta"
+JSON: {{"razonamiento_interno": "The user wants something they like. I see 'La Camisa Negra - Juanes' in their history. I will select that.", "musica_elegida": "Juanes - La Camisa Negra", "comentario_personalizado": "Vamos a lo seguro, {user}. Aquí tienes algo de Juanes que sé que te encanta.", "termino_busqueda_yt": "Juanes La Camisa Negra"}}
+
+User Instruction: "Quiero escuchar lo más reciente de Bad Bunny"
+JSON: {{"razonamiento_interno": "The user is explicitly asking for Bad Bunny's latest release. I will format the search term to find his newest track.", "musica_elegida": "Bad Bunny - Nuevo lanzamiento", "comentario_personalizado": "Claro que sí, {user}. Aquí tienes lo más fresco de Bad Bunny.", "termino_busqueda_yt": "Bad Bunny nuevo 2024"}}"""
 
 
 class LocalLLMClient:
-    def __init__(self, endpoint: str = LOCAL_LLM_ENDPOINT):
+    def __init__(self, endpoint: str = LOCAL_LLM_ENDPOINT, username: str = "Oyente"):
         self.endpoint = endpoint
+        self._username = username
+
+    @property
+    def username(self) -> str:
+        return self._username
+
+    @username.setter
+    def username(self, name: str):
+        self._username = name or "Oyente"
 
     def get_llm_response(
-        self, prompt: str, user_history: str = ""
+        self, prompt: str, user_context: str = ""
     ) -> Optional[Dict[str, Any]]:
+        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+            user=self._username,
+            user_context=user_context or "No recent history available.",
+        )
         user_content = (
-            f"<system>\n{SYSTEM_PROMPT}\n"
-            f"HISTORIAL DE REPRODUCCIÓN LOCAL (últimas canciones):\n{user_history}\n</system>\n\n"
-            f"<user>\nCONTEXTO ACTUAL: El usuario quiere escuchar música relacionada con: '{prompt}'.\n"
-            f"Genera tu respuesta estrictamente en el formato JSON solicitado. No agregues texto introductorio ni conclusiones.</user>"
+            f"<system>\n{system_prompt}\n</system>\n\n"
+            f"<user>\nUSER INSTRUCTION: {prompt}\n"
+            f"Follow the RULES and FORMAT above. Think step by step in 'razonamiento_interno'. Output ONLY the JSON object.</user>"
         )
 
         payload = {
             "model": "local-model",
             "messages": [{"role": "user", "content": user_content}],
             "temperature": 0.2,
-            "max_tokens": 300,
+            "max_tokens": 1000,
             "stream": False,
         }
 
@@ -58,7 +91,13 @@ class LocalLLMClient:
             print(f"[LLM ERROR] Unexpected response parsing: {e}")
             return None
 
-        # Extract JSON block using regex — handles backtick fences and surrounding fluff
+        # Strip markdown code fences, then extract JSON
+        raw_json = re.sub(r"^```(?:json)?\s*", "", raw_json.strip())
+        raw_json = re.sub(r"\s*```$", "", raw_json)
+        # if missing closing brace, append it (truncated response)
+        if raw_json.count("{") > raw_json.count("}"):
+            raw_json += "}"
+            print(f"[LLM DEBUG] Appended missing '}}' to truncated response")
         json_match = re.search(r"\{.*\}", raw_json, re.DOTALL)
         if json_match:
             raw_json = json_match.group()
@@ -68,11 +107,15 @@ class LocalLLMClient:
 
         try:
             parsed = json.loads(raw_json)
-            required_keys = {"comentario_dj", "siguiente_cancion"}
-            if not required_keys.issubset(parsed.keys()):
-                print(f"[LLM WARNING] Missing required keys. Have: {set(parsed.keys())}, Need: {required_keys}")
-            print(f"[LLM] Parsed OK: siguiente_cancion='{parsed.get('siguiente_cancion', '')}', "
-                  f"artista='{parsed.get('artista', '')}'")
+            required_keys = {"musica_elegida", "comentario_personalizado", "razonamiento_interno"}
+            missing = required_keys - set(parsed.keys())
+            if missing:
+                print(f"[LLM WARNING] Missing keys: {missing}. Have: {set(parsed.keys())}")
+            razon = parsed.get("razonamiento_interno", "")
+            if razon:
+                print(f"[LLM] Chain-of-thought: {razon[:150]}")
+            print(f"[LLM] Parsed OK: musica_elegida='{parsed.get('musica_elegida', '')}', "
+                  f"search='{parsed.get('termino_busqueda_yt', '')}'")
             return parsed
         except json.JSONDecodeError as e:
             print(f"[LLM ERROR] JSON decode failed: {e}")

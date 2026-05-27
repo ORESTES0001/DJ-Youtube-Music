@@ -1,14 +1,19 @@
+import math
 import random
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QStackedWidget,
     QLabel, QPushButton, QLineEdit, QTextEdit, QFrame, QScrollArea,
     QSlider, QSizePolicy, QDialog, QInputDialog,
 )
-from PySide6.QtCore import Qt, Slot, Signal, QTimer, QSize, QByteArray, QThread, QObject, QUrl
+from PySide6.QtCore import (
+    Qt, Slot, Signal, QTimer, QSize, QByteArray, QThread, QObject, QUrl, Property,
+    QEasingCurve, QPropertyAnimation, QPointF,
+)
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from PySide6.QtGui import (
     QPixmap, QPainter, QFont, QColor, QIcon, QTextCursor, QTextCharFormat,
+    QConicalGradient, QRadialGradient, QPainterPath,
 )
 from PySide6.QtSvg import QSvgRenderer
 
@@ -55,6 +60,9 @@ ICONS = {
     "sync": "M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z",
     "equalizer": "M10 20h4V4h-4v16zm-6 0h4v-8H4v8zM16 9v11h4V9h-4z",
     "edit": "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z",
+    "mic": "M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z",
+    "send": "M2.01 21L23 12 2.01 3 2 10l15 2-15 2z",
+    "graphic_eq": "M7 18h2V6H7v12zm4 4h2V2h-2v20zm-8-8h2v-4H3v4zm12 4h2V6h-2v12zm4-8v4h2v-4h-2z",
 }
 
 
@@ -157,54 +165,54 @@ class LoadingOverlay(QFrame):
 # ---------------------------------------------------------------------------
 VIBE_QSS = """
 QMainWindow, QWidget#centralWidget {
-    background-color: #131318;
+    background-color: #0b0b0f;
 }
 
 QWidget#sidebar {
-    background-color: #1b1b20;
-    border-right: 1px solid #444650;
+    background-color: #121216;
+    border-right: 1px solid #2a2a30;
 }
 
 QWidget#glassCard {
-    background-color: rgba(28, 27, 27, 0.65);
-    border: 1px solid #353534;
+    background-color: rgba(24, 24, 29, 0.85);
+    border: 1px solid #2a2a30;
     border-radius: 12px;
 }
 QWidget#glassCard:hover {
-    background-color: rgba(28, 27, 27, 0.8);
+    background-color: rgba(30, 30, 36, 0.95);
 }
 
 QWidget#glassPill {
-    background-color: rgba(28, 27, 27, 0.6);
-    border: 1px solid #353534;
+    background-color: rgba(24, 24, 29, 0.7);
+    border: 1px solid #2a2a30;
     border-radius: 9999px;
 }
 
 QWidget#loadingOverlay {
-    background-color: rgba(13, 14, 18, 0.85);
-    border: 1px solid rgba(53, 53, 52, 0.5);
+    background-color: rgba(11, 11, 14, 0.9);
+    border: 1px solid rgba(42, 42, 48, 0.5);
     border-radius: 16px;
 }
 
 QFrame#playbackBar {
-    background-color: rgba(27, 27, 32, 0.95);
-    border: 1px solid #444650;
-    border-radius: 16px;
+    background-color: rgba(18, 18, 22, 0.95);
+    border: 1px solid #2a2a30;
+    border-radius: 12px;
 }
 
 QFrame#historyRow {
     background-color: transparent;
     border: none;
-    border-bottom: 1px solid #29292f;
+    border-bottom: 1px solid #222228;
     min-height: 68px;
 }
 QFrame#historyRow:hover {
-    background-color: rgba(95, 116, 183, 0.06);
+    background-color: rgba(95, 116, 183, 0.08);
     border-radius: 8px;
 }
 
 QFrame#velocityBar-bg {
-    background-color: #29292f;
+    background-color: #222228;
     border-radius: 4px;
 }
 QFrame#velocityBar-fill {
@@ -216,48 +224,91 @@ QFrame#volumeSlider {
     background-color: transparent;
 }
 
+QSlider#volumeSlider::groove:horizontal,
+QSlider#velocitySlider::groove:horizontal {
+    height: 4px;
+    background-color: #222228;
+    border-radius: 2px;
+}
+QSlider#volumeSlider::handle:horizontal,
+QSlider#velocitySlider::handle:horizontal {
+    background-color: #b4c5ff;
+    width: 12px;
+    height: 12px;
+    margin: -4px 0;
+    border-radius: 6px;
+}
+QSlider#volumeSlider::handle:horizontal:hover,
+QSlider#velocitySlider::handle:horizontal:hover {
+    background-color: #d0daff;
+}
+QSlider#volumeSlider::sub-page:horizontal,
+QSlider#velocitySlider::sub-page:horizontal {
+    background-color: #5f74b7;
+    border-radius: 2px;
+}
+
+QFrame#musicCard {
+    background-color: #18181d;
+    border-radius: 10px;
+    border: none;
+}
+QFrame#musicCard:hover {
+    background-color: #222229;
+}
+
+QWidget#homeContainer {
+    background-color: transparent;
+}
+QWidget#homeWidget {
+    background-color: transparent;
+}
+QWidget#homeWidget > QWidget {
+    background-color: transparent;
+}
+
 QLabel#brandLabel {
     font-size: 32px; font-weight: 700; color: #b4c5ff;
-    font-family: 'Montserrat', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', 'Montserrat', sans-serif;
     letter-spacing: -0.02em;
 }
 
 QLabel#brandSmall {
     font-size: 22px; font-weight: 700; color: #b4c5ff;
-    font-family: 'Montserrat', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', 'Montserrat', sans-serif;
     letter-spacing: -0.02em;
 }
 
 QLabel#displayLg {
     font-size: 48px; font-weight: 700; color: #e4e1e8;
-    font-family: 'Montserrat', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', 'Montserrat', sans-serif;
     letter-spacing: -0.02em;
 }
 
 QLabel#headlineLg {
     font-size: 32px; font-weight: 700; color: #e4e1e8;
-    font-family: 'Montserrat', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', 'Montserrat', sans-serif;
     letter-spacing: -0.01em;
 }
 
 QLabel#headlineMd {
     font-size: 24px; font-weight: 600; color: #e4e1e8;
-    font-family: 'Montserrat', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', 'Montserrat', sans-serif;
 }
 
 QLabel#bodyLg {
     font-size: 18px; font-weight: 400; color: #c5c6d2;
-    font-family: 'Inter', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', sans-serif;
 }
 
 QLabel#bodyMd {
     font-size: 16px; font-weight: 400; color: #c5c6d2;
-    font-family: 'Inter', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', sans-serif;
 }
 
 QLabel#labelBold {
     font-size: 14px; font-weight: 700; color: #c5c6d2;
-    font-family: 'Inter', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', sans-serif;
     letter-spacing: 0.05em;
     text-transform: uppercase;
 }
@@ -269,35 +320,35 @@ QLabel#codeLog {
 
 QLabel#sectionHeader {
     font-size: 13px; font-weight: 700; color: #c5c6d2;
-    font-family: 'Inter', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', sans-serif;
     letter-spacing: 0.05em;
     text-transform: uppercase;
 }
 
 QLabel#statusBadge {
     font-size: 12px; font-weight: 700; color: #b4c5ff;
-    font-family: 'Inter', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', sans-serif;
     letter-spacing: 0.05em;
     text-transform: uppercase;
 }
 
 QLabel#goldText {
     font-size: 13px; font-weight: 600; color: #fcb970;
-    font-family: 'Inter', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', sans-serif;
 }
 
 QLineEdit {
     background-color: #1f1f24; color: #e4e1e8;
-    border: 1px solid #444650; border-radius: 22px;
+    border: 1px solid #2a2a30; border-radius: 22px;
     padding: 11px 22px; font-size: 14px;
-    font-family: 'Inter', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', 'Montserrat', sans-serif;
     min-height: 20px;
     selection-background-color: #5f74b7;
-    selection-color: #131318;
+    selection-color: #0b0b0e;
 }
 QLineEdit:focus {
     border-color: #b4c5ff;
-    background-color: #29292f;
+    background-color: #222228;
 }
 QLineEdit::placeholder { color: #8f909b; }
 
@@ -305,7 +356,7 @@ QPushButton {
     border: none; border-radius: 22px;
     padding: 11px 32px; font-size: 14px;
     font-weight: 700; min-height: 20px;
-    font-family: 'Montserrat', 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', 'Montserrat', sans-serif;
 }
 
 QPushButton#updateBtn {
@@ -411,17 +462,19 @@ QPushButton#iconBtn {
 QPushButton#iconBtn:hover { background-color: #29292f; color: #ffffff; }
 
 QPushButton#barPlayBtn {
-    background-color: #5f74b7; color: #ffffff;
-    border: 2px solid rgba(180, 197, 255, 0.3);
-    border-radius: 9999px; padding: 0;
-    min-width: 44px; min-height: 44px; max-width: 44px; max-height: 44px;
+    background-color: rgba(175, 145, 246, 0.6);
+    color: #ffffff;
+    border: 1px solid rgba(175, 145, 255, 0.9);
+    border-radius: 18px;
+    min-width: 10px; max-width: 10px;
+    min-height: 16px; max-height: 16px;
 }
 QPushButton#barPlayBtn:hover {
-    background-color: #6d82c9;
-    border-color: rgba(180, 197, 255, 0.7);
+    background-color: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.25);
 }
 QPushButton#barPlayBtn:pressed {
-    background-color: #465b9d;
+    background-color: rgba(255, 255, 255, 0.05);
 }
 
 QPushButton#barIconBtn {
@@ -537,17 +590,16 @@ class LoginWidget(QWidget):
         self._setup_ui()
         self._anim_timer = QTimer(self)
         self._anim_timer.timeout.connect(self._animate_bars)
-        self._bar_heights = [10, 10, 10, 10, 10, 10]
-        self._anim_dir = [1, -1, 1, -1, 1, 1]
-        self._anim_timer.start(180)
+        self._anim_phase = 0
+        self._anim_timer.start(15)
 
     def _animate_bars(self):
-        for i in range(len(self._bar_heights)):
-            self._bar_heights[i] += self._anim_dir[i] * 3
-            if self._bar_heights[i] >= 35 or self._bar_heights[i] <= 6:
-                self._anim_dir[i] *= -1
+        self._anim_phase += 1
         for i, bar in enumerate(self._waveform_bars):
-            bar.setFixedHeight(self._bar_heights[i])
+            shift = i * 0.1
+            raw = (self._anim_phase * 0.01 + shift) * 3.14159
+            h = 10 + abs(22 * math.sin(raw))
+            bar.setFixedHeight(max(6, min(38, int(h))))
 
     def show_auth_status(self, message: str, error: bool = False):
         self.auth_status.setText(message)
@@ -656,13 +708,6 @@ class LoginWidget(QWidget):
 
         container_layout.addWidget(card)
 
-        proof = QLabel("Join 50k+ Curators Worldwide")
-        proof.setObjectName("codeLog")
-        proof.setStyleSheet(
-            "color: #fcb970; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;"
-        )
-        proof.setAlignment(Qt.AlignCenter)
-        container_layout.addWidget(proof)
 
         root.addWidget(container)
 
@@ -678,11 +723,13 @@ class PlaybackBar(QFrame):
     skip_requested = Signal()
     back_requested = Signal()
     volume_changed = Signal(int)
+    velocity_changed = Signal(float)
     shuffle_requested = Signal()
     repeat_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, thumbnail_loader, parent=None):
         super().__init__(parent)
+        self._thumbnail_loader = thumbnail_loader
         self.setObjectName("playbackBar")
         self.setFixedHeight(72)
         self._paused = True
@@ -704,6 +751,10 @@ class PlaybackBar(QFrame):
             "background-color: qlineargradient(x1:0 y1:0, x2:1 y2:1,"
             " stop:0 #5f74b7, stop:1 #b4c5ff); border-radius: 8px;"
         )
+        self._cover_label = QLabel(self.cover_art)
+        self._cover_label.setFixedSize(50, 50)
+        self._cover_label.setScaledContents(True)
+        self._cover_label.setStyleSheet("background: transparent; border-radius: 8px;")
         left.addWidget(self.cover_art)
 
         info_col = QVBoxLayout()
@@ -733,8 +784,9 @@ class PlaybackBar(QFrame):
 
         self.btn_play = QPushButton()
         self.btn_play.setObjectName("barPlayBtn")
-        self.btn_play.setIcon(QIcon(_svg_pixmap(ICONS["play_arrow"], 22, "#ffffff")))
-        self.btn_play.setIconSize(QSize(22, 22))
+        self.btn_play.setFixedSize(36, 36)
+        self.btn_play.setIcon(QIcon(_svg_pixmap(ICONS["play_arrow"], 18, "#ffffff")))
+        self.btn_play.setIconSize(QSize(18, 18))
         self.btn_play.clicked.connect(self._on_play_pause)
         self.btn_play.setCursor(Qt.PointingHandCursor)
         center.addWidget(self.btn_play)
@@ -772,31 +824,22 @@ class PlaybackBar(QFrame):
         sep.setStyleSheet("background-color: #444650; max-width: 1px; max-height: 24px;")
         right.addWidget(sep)
 
-        velocity_header = QVBoxLayout()
-        velocity_header.setSpacing(2)
-        velocity_header.setAlignment(Qt.AlignRight)
-        vel_label = QLabel("VELOCITY")
-        vel_label.setObjectName("codeLog")
-        vel_label.setStyleSheet("color: #8f909b; font-size: 9px; letter-spacing: 0.1em;")
-        velocity_header.addWidget(vel_label)
+        speed_header = QVBoxLayout()
+        speed_header.setSpacing(2)
+        speed_header.setAlignment(Qt.AlignRight)
+        speed_label = QLabel("SPEED")
+        speed_label.setObjectName("codeLog")
+        speed_label.setStyleSheet("color: #8f909b; font-size: 9px; letter-spacing: 0.1em;")
+        speed_header.addWidget(speed_label)
 
-        vel_bg = QFrame()
-        vel_bg.setObjectName("velocityBar-bg")
-        vel_bg.setFixedSize(60, 6)
-        vel_layout = QHBoxLayout(vel_bg)
-        vel_layout.setContentsMargins(0, 0, 0, 0)
-        self.vel_fill = QFrame()
-        self.vel_fill.setObjectName("velocityBar-fill")
-        self.vel_fill.setFixedWidth(20)
-        vel_layout.addWidget(self.vel_fill)
-        vel_layout.addStretch()
-        velocity_header.addWidget(vel_bg)
-        right.addLayout(velocity_header)
-
-        self.vel_count = QLabel("0")
-        self.vel_count.setObjectName("codeLog")
-        self.vel_count.setStyleSheet("color: #fcb970; font-size: 10px;")
-        right.addWidget(self.vel_count)
+        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.setObjectName("velocitySlider")
+        self.speed_slider.setRange(50, 200)
+        self.speed_slider.setValue(100)
+        self.speed_slider.setFixedWidth(80)
+        self.speed_slider.valueChanged.connect(self._on_speed)
+        speed_header.addWidget(self.speed_slider)
+        right.addLayout(speed_header)
 
         layout.addLayout(right, stretch=3)
 
@@ -818,20 +861,24 @@ class PlaybackBar(QFrame):
     def _on_volume(self, value: int):
         self.volume_changed.emit(value)
 
-    def on_track_loaded(self, title: str, artist: str):
+    def _on_speed(self, value: int):
+        speed = round(value / 100.0, 1)
+        self.velocity_changed.emit(speed)
+
+    def on_track_loaded(self, title: str, artist: str, thumb_url: str = ""):
         self.bar_title.setText(title or "No track playing")
         self.bar_subtitle.setText(artist or "Ready")
         self.bar_title.setStyleSheet("color: #b4c5ff; font-size: 13px;")
+        if thumb_url and self._thumbnail_loader:
+            self._thumbnail_loader.load(self._cover_label, thumb_url)
 
     def on_play_state(self, paused: bool):
         self._paused = paused
         icon_name = "play_arrow" if paused else "pause"
-        self.btn_play.setIcon(QIcon(_svg_pixmap(ICONS[icon_name], 22, "#ffffff")))
+        self.btn_play.setIcon(QIcon(_svg_pixmap(ICONS[icon_name], 18, "#ffffff")))
 
     def on_velocity_update(self, count: int):
-        self.vel_count.setText(str(count))
-        w = min(count * 4, 56)
-        self.vel_fill.setFixedWidth(max(4, w))
+        pass
 
     def set_transport_enabled(self, enabled: bool):
         self.btn_back.setEnabled(enabled)
@@ -843,8 +890,9 @@ class PlaybackBar(QFrame):
         self.bar_subtitle.setText("Ready")
         self.bar_title.setStyleSheet("color: #e4e1e8; font-size: 13px;")
         self.on_play_state(True)
-        self.on_velocity_update(0)
         self.set_transport_enabled(False)
+        self._cover_label.clear()
+        self._cover_label.setStyleSheet("background: transparent; border-radius: 8px;")
         if self._shuffle_on:
             self._on_shuffle()
         if self._repeat_on:
@@ -852,7 +900,124 @@ class PlaybackBar(QFrame):
 
 
 # ---------------------------------------------------------------------------
-# DJ Booth Widget (Screen 1 -- La Cabina)
+# OndaVisualizer — custom-painted conical-gradient rotating ring + pulse
+# ---------------------------------------------------------------------------
+class OndaVisualizer(QWidget):
+    """Custom-painted circle with a rotating QConicalGradient border
+    and a QPropertyAnimation-based talking pulse."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(350, 350)
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+
+        # ── rotation angle for the conical gradient ──
+        self._angle = 0.0
+        self._rotate_timer = QTimer(self)
+        self._rotate_timer.timeout.connect(self._rotate_step)
+        self._rotate_timer.start(40)  # 25 fps smooth rotation
+
+        # ── pulse animation property ──
+        self._pulse = 0.0  # 0 = idle, 1 = max glow
+        self._pulse_anim = QPropertyAnimation(self, b"pulse")
+        self._pulse_anim.setLoopCount(1)
+
+        # ── talking glow multiplier ──
+        self._glow_alpha = 80
+
+        # center icon
+        self._center_pixmap = _svg_pixmap(ICONS["graphic_eq"], 48, "#ffffff")
+
+    # -- Q_PROPERTY for QPropertyAnimation --------------------------------
+    def _pulse_prop(self) -> float:
+        return self._pulse
+
+    def _set_pulse_prop(self, v: float):
+        self._pulse = v
+        self._glow_alpha = int(60 + v * 160)
+        self.update()
+
+    pulse = Property(float, _pulse_prop, _set_pulse_prop)
+
+    # -- rotation timer ---------------------------------------------------
+    def _rotate_step(self):
+        self._angle = (self._angle + 1.5) % 360
+        self.update()
+
+    # -- paint ------------------------------------------------------------
+    def paintEvent(self, event):
+        sz = self.width()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        center = sz / 2.0
+        radius = center - 4  # leave room for border
+
+        # clip circle
+        path = QPainterPath()
+        path.addEllipse(2, 2, sz - 4, sz - 4)
+        painter.setClipPath(path)
+
+        # ── background fill ──
+        painter.fillPath(path, QColor("#121216"))
+
+        # ── conical gradient border ──
+        border_w = 4 + int(self._pulse * 4)
+        cg = QConicalGradient(center, center, self._angle)
+        cg.setColorAt(0.0,  QColor(122, 140, 232, 180))
+        cg.setColorAt(0.25, QColor(226, 162, 255, 180))
+        cg.setColorAt(0.5,  QColor(255, 179, 138, 180))
+        cg.setColorAt(0.75, QColor(122, 140, 232, 180))
+        cg.setColorAt(1.0,  QColor(122, 140, 232, 180))
+
+        pen = painter.pen()
+        pen.setBrush(cg)
+        pen.setWidth(border_w)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+
+        inner_radius = radius - border_w / 2.0
+        painter.drawEllipse(QPointF(center, center), inner_radius, inner_radius)
+
+        # ── outer glow ring during pulse ──
+        if self._pulse > 0.05:
+            glow_radius = radius + 2 + self._pulse * 6
+            rg = QRadialGradient(center, center, glow_radius)
+            glow_col = QColor(122, 140, 232, int(30 * self._pulse))
+            rg.setColorAt(0.85, glow_col)
+            rg.setColorAt(1.0,  QColor(122, 140, 232, 0))
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(rg)
+            painter.drawEllipse(QPointF(center, center), glow_radius, glow_radius)
+
+        # ── center icon ──
+        icon_size = 48
+        icon_x = int(center - icon_size / 2)
+        icon_y = int(center - icon_size / 2)
+        painter.drawPixmap(icon_x, icon_y, self._center_pixmap)
+
+        painter.end()
+
+    # -- public API -------------------------------------------------------
+    def start_pulse(self, text_length: int = 0):
+        """Animate the breathing glow. Longer text → faster animation."""
+        duration = max(600, 2000 - text_length * 15)
+        self._pulse_anim.stop()
+        self._pulse_anim.setDuration(duration)
+        self._pulse_anim.setStartValue(1.0)
+        self._pulse_anim.setEndValue(0.0)
+        self._pulse_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+        self._pulse_anim.start()
+
+    def stop_pulse(self):
+        self._pulse_anim.stop()
+        self._pulse = 0.0
+        self._glow_alpha = 80
+        self.update()
+
+
+# ---------------------------------------------------------------------------
+# DJ Booth Widget — Centered QueNota? Landing
 # ---------------------------------------------------------------------------
 class DJBoothWidget(QWidget):
     start_session_requested = Signal(str)
@@ -863,153 +1028,227 @@ class DJBoothWidget(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
+        self.setStyleSheet("background-color: #0b0b0f;")
         root = QHBoxLayout(self)
-        root.setContentsMargins(24, 24, 24, 24)
-        root.setSpacing(24)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        left_col = QVBoxLayout()
-        left_col.setSpacing(12)
+        # ── Left: centered conversational area ──
+        center = QWidget()
+        center.setStyleSheet("background-color: #0b0b0f;")
+        col = QVBoxLayout(center)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
 
-        context_card = QFrame()
-        context_card.setObjectName("glassCard")
-        context_card.setStyleSheet(
-            "QFrame#glassCard { background-color: rgba(28, 27, 27, 0.65);"
-            " border: 1px solid #353534; border-radius: 12px; padding: 16px; }"
+        col.addStretch(1)
+
+        # Status Pill
+        pill_row = QHBoxLayout()
+        pill_row.addStretch()
+        self.status_pill = QLabel("●  QueNota? AI está escuchando")
+        self.status_pill.setStyleSheet(
+            "background-color: #1a1a24; color: #b4c5ff;"
+            " border-radius: 12px; padding: 5px 15px; font-size: 11px;"
+            " font-family: 'Segoe UI', sans-serif;"
         )
-        context_layout = QVBoxLayout(context_card)
-        context_layout.setContentsMargins(16, 14, 16, 16)
-        context_layout.setSpacing(10)
+        pill_row.addWidget(self.status_pill)
+        pill_row.addStretch()
+        col.addLayout(pill_row)
 
-        context_header = QLabel("VIBE CONTEXT")
-        context_header.setObjectName("sectionHeader")
-        context_layout.addWidget(context_header)
+        col.addSpacing(30)
+
+        # Giant Visualizer
+        viz_row = QHBoxLayout()
+        viz_row.addStretch()
+        self.onda = OndaVisualizer()
+        viz_row.addWidget(self.onda)
+        viz_row.addStretch()
+        col.addLayout(viz_row)
+
+        col.addSpacing(40)
+
+        # Floating Input Bar
+        input_row = QHBoxLayout()
+        input_row.addStretch()
+
+        self.input_bar = QFrame()
+        self.input_bar.setFixedWidth(600)
+        self.input_bar.setFixedHeight(60)
+        self.input_bar.setStyleSheet(
+            "QFrame { background-color: #16161e; border-radius: 15px; border: none; }"
+        )
+        bar_layout = QHBoxLayout(self.input_bar)
+        bar_layout.setContentsMargins(14, 0, 8, 0)
+        bar_layout.setSpacing(8)
+
+        mic_icon = QLabel()
+        mic_icon.setPixmap(_svg_pixmap(ICONS["mic"], 20, "#7a8ce8"))
+        mic_icon.setFixedSize(20, 20)
+        bar_layout.addWidget(mic_icon)
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Artist, mood, or song...")
-        self.search_input.returnPressed.connect(self._on_start)
-        context_layout.addWidget(self.search_input)
-
-        self.start_btn = QPushButton("Start Session")
-        self.start_btn.setObjectName("updateBtn")
-        self.start_btn.clicked.connect(self._on_start)
-        context_layout.addWidget(self.start_btn)
-
-        left_col.addWidget(context_card)
-        left_col.addStretch()
-
-        right_col = QVBoxLayout()
-        right_col.setSpacing(12)
-
-        np_card = QFrame()
-        np_card.setObjectName("glassCard")
-        np_card.setStyleSheet(
-            "QFrame#glassCard { background-color: rgba(28, 27, 27, 0.65);"
-            " border: 1px solid #353534; border-radius: 12px; padding: 16px; }"
+        self.search_input.setPlaceholderText("¿Qué vibe quieres escuchar hoy o dime qué elija?")
+        self.search_input.setStyleSheet(
+            "QLineEdit { background: transparent; border: none;"
+            " color: #e4e1e8; font-size: 14px; padding: 0;"
+            " font-family: 'Segoe UI', sans-serif; }"
+            "QLineEdit::placeholder { color: #555566; }"
         )
-        np_layout = QVBoxLayout(np_card)
-        np_layout.setContentsMargins(18, 14, 18, 14)
-        np_layout.setSpacing(4)
+        self.search_input.returnPressed.connect(self._on_start)
+        bar_layout.addWidget(self.search_input, stretch=1)
 
-        np_header = QLabel("NOW PLAYING")
-        np_header.setObjectName("sectionHeader")
-        np_layout.addWidget(np_header)
+        self.send_btn = QPushButton()
+        self.send_btn.setFixedSize(40, 40)
+        self.send_btn.setCursor(Qt.PointingHandCursor)
+        self.send_btn.setStyleSheet(
+            "QPushButton { background-color: #7a8ce8; border: none;"
+            " border-radius: 10px; }"
+            "QPushButton:hover { background-color: #8a9cf8; }"
+            "QPushButton:pressed { background-color: #6a7cd8; }"
+        )
+        self.send_btn.setIcon(QIcon(_svg_pixmap(ICONS["send"], 20, "#ffffff")))
+        self.send_btn.setIconSize(QSize(20, 20))
+        self.send_btn.clicked.connect(self._on_start)
+        bar_layout.addWidget(self.send_btn)
 
-        self.now_playing_title = QLabel("")
-        self.now_playing_title.setObjectName("headlineMd")
-        self.now_playing_title.setStyleSheet("color: #b4c5ff; font-size: 20px;")
-        np_layout.addWidget(self.now_playing_title)
+        input_row.addWidget(self.input_bar)
+        input_row.addStretch()
+        col.addLayout(input_row)
 
-        self.now_playing_artist = QLabel("")
-        self.now_playing_artist.setObjectName("bodyMd")
-        self.now_playing_artist.setStyleSheet("color: #c5c6d2;")
-        np_layout.addWidget(self.now_playing_artist)
+        col.addSpacing(12)
 
-        self.status_label = QLabel("Ready -- enter a query to start")
-        self.status_label.setObjectName("bodyMd")
-        self.status_label.setStyleSheet("font-size: 14px;")
-        self.status_label.setWordWrap(True)
-        np_layout.addWidget(self.status_label)
+        # "o" separator
+        sep_row = QHBoxLayout()
+        sep_row.addStretch()
+        sep_lbl = QLabel("o")
+        sep_lbl.setStyleSheet("color: #555560; font-size: 12px; background: transparent;")
+        sep_row.addWidget(sep_lbl)
+        sep_row.addStretch()
+        col.addLayout(sep_row)
 
-        right_col.addWidget(np_card)
+        col.addSpacing(8)
 
-        log_header = QLabel("SESSION LOG")
-        log_header.setObjectName("sectionHeader")
-        right_col.addWidget(log_header)
+        # Surprise Me Button
+        surprise_row = QHBoxLayout()
+        surprise_row.addStretch()
+        self.surprise_btn = QPushButton("✨  ¿Quieres que QueNota? elija por ti?")
+        self.surprise_btn.setCursor(Qt.PointingHandCursor)
+        self.surprise_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; border: 1px solid #333340;"
+            " border-radius: 10px; padding: 8px 20px; color: #a0a0b0;"
+            " font-size: 13px; font-family: 'Segoe UI', sans-serif; }"
+            "QPushButton:hover { border-color: #7a8ce8; color: #c5c6d2; }"
+        )
+        self.surprise_btn.clicked.connect(self._on_surprise)
+        surprise_row.addWidget(self.surprise_btn)
+        surprise_row.addStretch()
+        col.addLayout(surprise_row)
 
-        self.log_area = QTextEdit()
-        self.log_area.setReadOnly(True)
-        self.log_area.setMinimumHeight(180)
-        right_col.addWidget(self.log_area, stretch=1)
+        col.addStretch(1)
 
-        root.addLayout(left_col, stretch=4)
-        root.addLayout(right_col, stretch=8)
+        # (track info lives exclusively in the bottom PlaybackBar)
+
+        # ── Right: AI Rationale Panel ──
+        self.rationale_panel = QFrame()
+        self.rationale_panel.setFixedWidth(280)
+        self.rationale_panel.setObjectName("rationalePanel")
+        self.rationale_panel.setStyleSheet(
+            "QFrame#rationalePanel {"
+            " background-color: #121216;"
+            " border-left: 1px solid #2a2a30;"
+            "}"
+        )
+        rp_layout = QVBoxLayout(self.rationale_panel)
+        rp_layout.setContentsMargins(16, 20, 16, 20)
+        rp_layout.setSpacing(12)
+
+        rp_header = QLabel("DJ Commentary")
+        rp_header.setStyleSheet(
+            "color: #b4c5ff; font-size: 12px; font-weight: 700;"
+            " letter-spacing: 1px; text-transform: uppercase;"
+            " font-family: 'Segoe UI', sans-serif;"
+        )
+        rp_layout.addWidget(rp_header)
+
+        self.rationale_scroll = QScrollArea()
+        self.rationale_scroll.setWidgetResizable(True)
+        self.rationale_scroll.setObjectName("rationaleScroll")
+        self.rationale_scroll.setStyleSheet(
+            "QScrollArea#rationaleScroll { background: transparent; border: none; }"
+            "QScrollBar:vertical { width: 4px; background: transparent; }"
+            "QScrollBar::handle:vertical { background: #2a2a30; border-radius: 2px; }"
+        )
+        self.rationale_text = QLabel("The DJ's commentary will appear here once a session starts.")
+        self.rationale_text.setWordWrap(True)
+        self.rationale_text.setStyleSheet(
+            "color: #c5c6d2; font-size: 13px; line-height: 1.5;"
+            " font-family: 'Segoe UI', sans-serif; background: transparent;"
+        )
+        self.rationale_scroll.setWidget(self.rationale_text)
+        rp_layout.addWidget(self.rationale_scroll, stretch=1)
+
+        self.rationale_panel.hide()
+        root.addWidget(center, stretch=1)
+        root.addWidget(self.rationale_panel)
+
+    def _on_surprise(self):
+        import random
+        surprises = [
+            "algo inesperado y experimental",
+            "música indie de Nicaragua",
+            "lo-fi para programar de noche",
+            "algo que me vuele la cabeza",
+            "ritmos africanos modernos",
+            "electronica ambiental",
+            "jazz fusion latinoamericano",
+            "algo con guitarra acústica",
+        ]
+        query = random.choice(surprises)
+        self.search_input.setText(query)
+        self._on_start()
 
     def _on_start(self):
         query = self.search_input.text().strip()
         if not query:
             query = "lo-fi programming music"
-
+        self.status_pill.setText("●  QueNota? AI está pensando...")
+        self.rationale_text.setText("Waiting for AI response...")
         if self.worker_thread and self.worker_thread.isRunning():
             self.worker_thread.update_query(query)
-            self._append_log("Context updated to: '{}'".format(query))
-            self.status_label.setText("Context updated -- next transition")
         else:
-            self.start_btn.setText("Update Vibe")
-            self.log_area.clear()
-            self.status_label.setText("Launching DJ session...")
-            self.now_playing_title.setText("")
-            self.now_playing_artist.setText("")
             self.start_session_requested.emit(query)
 
-    def _append_log(self, msg: str):
-        cursor = self.log_area.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        fmt = QTextCharFormat()
-        if msg.startswith("[STREAM ERROR]") or msg.startswith("[PAUSE ERROR]"):
-            fmt.setForeground(QColor("#ffb4ab"))
-        elif msg.startswith("No song found") or msg.startswith("Could not extract"):
-            fmt.setForeground(QColor("#fcb970"))
-        elif msg.startswith("Now playing"):
-            fmt.setForeground(QColor("#b4c5ff"))
-            fmt.setFontWeight(QFont.Bold)
-        elif msg.startswith("DJ speaking") or msg.startswith("Song finished"):
-            fmt.setForeground(QColor("#b4c5ff"))
-        elif msg.startswith("---"):
-            fmt.setForeground(QColor("#8f909b"))
-        else:
-            fmt.setForeground(QColor("#c5c6d2"))
-        cursor.insertText(msg + "\n", fmt)
-        self.log_area.setTextCursor(cursor)
-
-    def on_status_changed(self, status: str):
-        self.status_label.setText(status)
-
-    def on_song_playing(self, title: str, artist: str):
-        self.now_playing_title.setText(title)
-        self.now_playing_artist.setText(artist)
+    def on_song_playing(self, title: str, artist: str, thumb_url: str = ""):
+        pass  # track info displayed on bottom PlaybackBar
 
     def on_log_message(self, msg: str):
-        self._append_log(msg)
+        pass
 
     def on_dj_speaking(self, comment: str):
-        cursor = self.log_area.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor("#b4c5ff"))
-        cursor.insertText('DJ: "{}"\n'.format(comment), fmt)
-        self.log_area.setTextCursor(cursor)
+        self.status_pill.setText("●  QueNota? AI está hablando...")
+        self.onda.start_pulse(len(comment or ""))
+        self.show_commentary(comment)
+        QTimer.singleShot(3000, self._stop_dj_speaking)
+
+    def _stop_dj_speaking(self):
+        self.status_pill.setText("●  QueNota? AI está escuchando")
+        self.onda.stop_pulse()
 
     def on_session_finished(self):
-        self.start_btn.setText("Start Session")
+        self.status_pill.setText("●  QueNota? AI está escuchando")
+        self.onda.stop_pulse()
 
     def reset_state(self):
-        self.start_btn.setText("Start Session")
-        self.log_area.clear()
-        self.status_label.setText("Ready -- enter a query to start")
-        self.now_playing_title.setText("")
-        self.now_playing_artist.setText("")
+        self.status_pill.setText("●  QueNota? AI está escuchando")
+        self.onda.stop_pulse()
         self.search_input.clear()
-        self.search_input.setFocus()
+
+    def show_commentary(self, text: str):
+        self.rationale_text.setText(text or "")
+        self.rationale_panel.show()
+
+    def set_next_tracks(self, tracks: list):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1070,6 +1309,54 @@ class DiscoverWidget(QWidget):
         self._loading = None
         self._setup_ui()
 
+    def _build_mood_grid(self, parent_layout):
+        grid = QGridLayout()
+        grid.setSpacing(12)
+        moods = [
+            ("Energy", "bolt", "#ff6b6b"),
+            ("Focus", "self_improvement", "#5f74b7"),
+            ("Relax", "spa", "#51cf66"),
+            ("Late Night", "nightlight", "#845ef7"),
+            ("Workout", "fitness_center", "#ff922b"),
+            ("Commute", "commute", "#20c997"),
+        ]
+        row, col = 0, 0
+        for name, icon, color in moods:
+            tile = QPushButton()
+            tile.setObjectName("moodPill")
+            tile.setFixedSize(160, 80)
+            tile.setCursor(Qt.PointingHandCursor)
+            tile.setStyleSheet(f"""
+                QPushButton#moodPill {{
+                    background-color: qlineargradient(x1:0 y1:0, x2:1 y2:1,
+                        stop:0 {color}44, stop:1 {color}22);
+                    border: 1px solid {color}66;
+                    border-radius: 14px;
+                    padding: 12px;
+                }}
+                QPushButton#moodPill:hover {{
+                    background-color: qlineargradient(x1:0 y1:0, x2:1 y2:1,
+                        stop:0 {color}66, stop:1 {color}44);
+                    border-color: {color};
+                }}
+            """)
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setSpacing(4)
+            tile_layout.setAlignment(Qt.AlignCenter)
+            icon_lbl = _icon_label(icon, 24, color)
+            tile_layout.addWidget(icon_lbl, alignment=Qt.AlignCenter)
+            text = QLabel(name)
+            text.setStyleSheet(f"color: #e4e1e8; font-size: 12px; font-weight: 600; background: transparent;")
+            text.setAlignment(Qt.AlignCenter)
+            tile_layout.addWidget(text, alignment=Qt.AlignCenter)
+            tile.clicked.connect(lambda checked=False, m=name: self.on_mood_selected(m))
+            grid.addWidget(tile, row, col)
+            col += 1
+            if col >= 3:
+                col = 0
+                row += 1
+        parent_layout.addLayout(grid)
+
     def _setup_ui(self):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1080,7 +1367,7 @@ class DiscoverWidget(QWidget):
         content.setStyleSheet("background-color: transparent;")
         root = QVBoxLayout(content)
         root.setContentsMargins(24, 24, 24, 24)
-        root.setSpacing(32)
+        root.setSpacing(28)
 
         hero = QFrame()
         hero.setObjectName("glassCard")
@@ -1088,154 +1375,41 @@ class DiscoverWidget(QWidget):
             "QFrame#glassCard {"
             " background: qlineargradient(x1:0 y1:0, x2:1 y2:1,"
             " stop:0 rgba(95,116,183,0.15), stop:1 rgba(180,197,255,0.05));"
-            " border: 1px solid #353534; border-radius: 24px; padding: 28px; }"
+            " border: 1px solid #2a2a30; border-radius: 24px; padding: 28px; }"
         )
         hero_layout = QVBoxLayout(hero)
         hero_layout.setSpacing(8)
 
-        badge_row = QHBoxLayout()
-        pulse_dot = QFrame()
-        pulse_dot.setFixedSize(8, 8)
-        pulse_dot.setStyleSheet("background-color: #b4c5ff; border-radius: 4px;")
-        badge_row.addWidget(pulse_dot)
-
-        live_badge = QLabel("  LIVE DISCOVERY")
-        live_badge.setObjectName("statusBadge")
-        live_badge.setStyleSheet(
-            "color: #b4c5ff; font-size: 12px; padding: 4px 12px;"
-            " background-color: rgba(180, 197, 255, 0.1); border-radius: 12px;"
-        )
-        badge_row.addWidget(live_badge)
-        badge_row.addStretch()
-
-        waveform = QHBoxLayout()
-        waveform.setSpacing(2)
-        for _ in range(6):
-            wb = QFrame()
-            wb.setFixedSize(4, 20)
-            wb.setStyleSheet("background-color: #b4c5ff; border-radius: 4px;")
-            waveform.addWidget(wb)
-        badge_row.addLayout(waveform)
-        hero_layout.addLayout(badge_row)
-
-        hero_title = QLabel("Explore the Pulse.")
+        hero_title = QLabel("Explorar")
         hero_title.setObjectName("displayLg")
-        hero_title.setStyleSheet("font-size: 40px;")
+        hero_title.setStyleSheet("font-size: 36px;")
         hero_layout.addWidget(hero_title)
 
         hero_desc = QLabel(
-            "Curated sonic experiences driven by AI intelligence and global trending rhythms. "
-            "Select a mood to begin your session."
+            "Descubre nueva música por estado de ánimo, género o tendencias globales."
         )
         hero_desc.setObjectName("bodyLg")
         hero_desc.setWordWrap(True)
         hero_layout.addWidget(hero_desc)
         root.addWidget(hero)
 
-        mood_header = QHBoxLayout()
-        mood_title = QLabel("BROWSE BY MOOD")
-        mood_title.setObjectName("sectionHeader")
-        mood_header.addWidget(mood_title)
-        mood_header.addStretch()
-        mood_link = QPushButton("View All")
-        mood_link.setObjectName("textLink")
-        mood_link.setStyleSheet("font-size: 13px; font-weight: 700;")
-        mood_link.hide()
-        mood_header.addWidget(mood_link)
-        root.addLayout(mood_header)
+        moods_header = QLabel("Moods y Géneros")
+        moods_header.setStyleSheet("color: #e4e1e8; font-size: 20px; font-weight: 700;")
+        root.addWidget(moods_header)
 
-        mood_row = QWidget()
-        mood_row.setStyleSheet("background-color: transparent;")
-        mood_row_layout = QHBoxLayout(mood_row)
-        mood_row_layout.setSpacing(12)
-        mood_row_layout.setContentsMargins(0, 0, 0, 0)
+        self._build_mood_grid(root)
 
-        self._mood_btns = []
-        for mood_name, icon_name in MOOD_CATEGORIES:
-            btn = QPushButton()
-            btn.setObjectName("moodPill")
-            btn.setLayout(QVBoxLayout())
-            btn.layout().setSpacing(6)
-            btn.layout().setAlignment(Qt.AlignCenter)
-            icon_lbl = _icon_label(icon_name, 28, "#b4c5ff" if icon_name == "bolt" else "#c5c6d2")
-            btn.layout().addWidget(icon_lbl, alignment=Qt.AlignCenter)
-            text_lbl = QLabel(mood_name)
-            text_lbl.setStyleSheet("color: #e4e1e8; font-size: 13px; font-weight: 600;")
-            text_lbl.setAlignment(Qt.AlignCenter)
-            btn.layout().addWidget(text_lbl, alignment=Qt.AlignCenter)
-            btn.clicked.connect(lambda checked=False, m=mood_name: self.on_mood_selected(m))
-            self._mood_btns.append(btn)
-            mood_row_layout.addWidget(btn)
+        charts_header = QLabel("Top Charts")
+        charts_header.setStyleSheet("color: #e4e1e8; font-size: 20px; font-weight: 700;")
+        root.addWidget(charts_header)
 
-        root.addWidget(mood_row)
-
-        self.bento_header = QHBoxLayout()
-        bento_title = QLabel("TRENDING STATIONS")
-        bento_title.setObjectName("sectionHeader")
-        self.bento_header.addWidget(bento_title)
-        self.bento_header.addStretch()
-
-        nav_left = _icon_button("chevron_left", 20, "#c5c6d2", "", "")
-        nav_left.setStyleSheet(
-            "QPushButton { background: transparent; border: 1px solid #444650;"
-            " border-radius: 20px; padding: 6px; min-width: 32px; min-height: 32px; }"
-        )
-        self.bento_header.addWidget(nav_left)
-        nav_right = _icon_button("chevron_right", 20, "#c5c6d2", "", "")
-        nav_right.setStyleSheet(
-            "QPushButton { background: transparent; border: 1px solid #444650;"
-            " border-radius: 20px; padding: 6px; min-width: 32px; min-height: 32px; }"
-        )
-        self.bento_header.addWidget(nav_right)
-        root.addLayout(self.bento_header)
-
-        self.bento_grid = QWidget()
-        self.bento_grid.setStyleSheet("background-color: transparent;")
-        self.bento_grid_layout = QHBoxLayout(self.bento_grid)
-        self.bento_grid_layout.setSpacing(12)
-        self.bento_grid_layout.setContentsMargins(0, 0, 0, 0)
-        self.bento_grid_layout.addStretch()
-        root.addWidget(self.bento_grid)
-
-        sync_section = QFrame()
-        sync_section.setObjectName("glassCard")
-        sync_section.setStyleSheet(
-            "QFrame#glassCard { background-color: rgba(28,27,27,0.6);"
-            " border: 1px solid #353534; border-radius: 24px; padding: 24px; }"
-        )
-        sync_layout = QHBoxLayout(sync_section)
-        sync_layout.setSpacing(20)
-
-        yt_logo = QFrame()
-        yt_logo.setFixedSize(48, 48)
-        yt_logo.setStyleSheet("background-color: #FF0000; border-radius: 12px;")
-        sync_layout.addWidget(yt_logo)
-
-        sync_text = QVBoxLayout()
-        sync_text.setSpacing(4)
-        sync_title = QLabel("YouTube Music Integration")
-        sync_title.setObjectName("headlineMd")
-        sync_text.addWidget(sync_title)
-        sync_desc = QLabel(
-            "Get mood-based playlists directly from your YTM library and global trending data."
-        )
-        sync_desc.setObjectName("bodyMd")
-        sync_desc.setStyleSheet("color: #c5c6d2;")
-        sync_desc.setWordWrap(True)
-        sync_text.addWidget(sync_desc)
-        sync_layout.addLayout(sync_text, stretch=1)
-
-        self.fetch_btn = QPushButton("  Fetch Mood Playlists")
-        self.fetch_btn.setObjectName("ghostBtn")
-        self.fetch_btn.setIcon(QIcon(_svg_pixmap(ICONS["sync"], 18, "#c5c6d2")))
-        self.fetch_btn.setIconSize(QSize(18, 18))
-        self.fetch_btn.setStyleSheet(
-            "QPushButton { background-color: #29292f; border: 1px solid #444650;"
-            " border-radius: 9999px; padding: 14px 28px; font-weight: 600; }"
-        )
-        self.fetch_btn.hide()
-        sync_layout.addWidget(self.fetch_btn)
-        root.addWidget(sync_section)
+        self.charts_scroll = QFrame()
+        self.charts_scroll.setFixedHeight(210)
+        self.charts_layout = QHBoxLayout(self.charts_scroll)
+        self.charts_layout.setContentsMargins(0, 0, 0, 0)
+        self.charts_layout.setSpacing(12)
+        self.charts_layout.addStretch()
+        root.addWidget(self.charts_scroll)
 
         self.auth_placeholder = QLabel(
             "Sign in with YouTube Music to see trending charts and personalized mood stations."
@@ -1244,8 +1418,8 @@ class DiscoverWidget(QWidget):
         self.auth_placeholder.setWordWrap(True)
         self.auth_placeholder.setAlignment(Qt.AlignCenter)
         self.auth_placeholder.setStyleSheet(
-            "color: #8f909b; padding: 40px; background-color: rgba(28, 27, 27, 0.4);"
-            " border: 1px dashed #444650; border-radius: 16px; font-size: 15px;"
+            "color: #8f909b; padding: 40px; background-color: rgba(24, 24, 29, 0.4);"
+            " border: 1px dashed #2a2a30; border-radius: 16px; font-size: 15px;"
         )
         root.addWidget(self.auth_placeholder)
 
@@ -1263,8 +1437,8 @@ class DiscoverWidget(QWidget):
             print(f"[DISCOVER] Mood selected but no handler: {mood_title}")
 
     def refresh(self, charts: dict = None):
-        while self.bento_grid_layout.count():
-            item = self.bento_grid_layout.takeAt(0)
+        while self.charts_layout.count():
+            item = self.charts_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
@@ -1276,28 +1450,36 @@ class DiscoverWidget(QWidget):
                 charts = {}
             trending = charts.get("trending", [])
             if isinstance(trending, list) and trending:
-                for i, track in enumerate(trending[:8]):
+                for i, track in enumerate(trending[:10]):
                     if not isinstance(track, dict):
                         continue
                     sub = track.get("artist", "") or "Various"
                     if track.get("plays"):
                         sub += "  |  " + track["plays"]
-                    card = _BentoCard(
+                    thumbnails = track.get("thumbnails", [])
+                    thumb_url = ""
+                    if isinstance(thumbnails, list) and thumbnails:
+                        last = thumbnails[-1]
+                        if isinstance(last, dict):
+                            thumb_url = last.get("url", "")
+                    card = _ChartCard(
                         track.get("title", "Track"),
                         sub,
-                        BENTO_GRADIENTS[i % len(BENTO_GRADIENTS)],
+                        thumb_url,
+                        track.get("video_id", ""),
+                        self._thumbnail_loader,
                     )
                     video_id = track.get("video_id", "")
                     if video_id:
                         card.clicked.connect(lambda v=video_id: self._play_station(v))
-                    self.bento_grid_layout.addWidget(card)
-                self.bento_grid_layout.addStretch()
+                    self.charts_layout.addWidget(card)
+                self.charts_layout.addStretch()
             else:
                 placeholder = QLabel("No trending data available.")
                 placeholder.setObjectName("bodyMd")
                 placeholder.setStyleSheet("color: #8f909b; padding: 20px;")
-                self.bento_grid_layout.addWidget(placeholder)
-                self.bento_grid_layout.addStretch()
+                self.charts_layout.addWidget(placeholder)
+                self.charts_layout.addStretch()
         else:
             self.auth_placeholder.show()
 
@@ -1737,7 +1919,7 @@ class HistoryWidget(QWidget):
 
         hist_desc = QLabel(
             "A curated timeline of your last discoveries from YouTube Music, "
-            "processed through the Virtual Curator for optimized mixing."
+            "processed through QueNota? for optimized mixing."
         )
         hist_desc.setObjectName("bodyMd")
         hist_desc.setStyleSheet("color: #c5c6d2; max-width: 600px;")
@@ -1994,6 +2176,191 @@ class _HistoryWorker(QThread):
         self.data_loaded.emit(history)
 
 
+class _HomeWorker(QThread):
+    data_loaded = Signal(list)
+    def __init__(self, music_service):
+        super().__init__()
+        self.music_service = music_service
+    def run(self):
+        try:
+            home_data = self.music_service.get_home()
+        except Exception:
+            home_data = []
+        self.data_loaded.emit(home_data)
+
+
+# ---------------------------------------------------------------------------
+# Home / Inicio Widget (YouTube Music style)
+# ---------------------------------------------------------------------------
+class _HomeCard(QFrame):
+    clicked = Signal(str)
+    def __init__(self, title: str, subtitle: str, thumb_url: str, video_id: str, thumbnail_loader, parent=None):
+        super().__init__(parent)
+        self._video_id = video_id
+        self.setObjectName("musicCard")
+        self.setFixedSize(160, 200)
+        self.setCursor(Qt.PointingHandCursor)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.thumb = QLabel()
+        self.thumb.setFixedSize(160, 160)
+        self.thumb.setScaledContents(True)
+        self.thumb.setStyleSheet("background-color: #29292f; border-radius: 10px;")
+        layout.addWidget(self.thumb)
+
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet("color: #e4e1e8; font-size: 12px; font-weight: 600; padding: 0 4px;")
+        title_lbl.setWordWrap(True)
+        title_lbl.setFixedWidth(160)
+        layout.addWidget(title_lbl)
+
+        sub_lbl = QLabel(subtitle)
+        sub_lbl.setStyleSheet("color: #8f909b; font-size: 11px; padding: 0 4px;")
+        sub_lbl.setFixedWidth(160)
+        layout.addWidget(sub_lbl)
+
+        layout.addStretch()
+
+        if thumb_url and thumbnail_loader:
+            thumbnail_loader.load(self.thumb, thumb_url)
+
+    def mousePressEvent(self, event):
+        if self._video_id:
+            self.clicked.emit(self._video_id)
+        super().mousePressEvent(event)
+
+
+class HomeWidget(QScrollArea):
+    track_selected = Signal(str)
+
+    def __init__(self, music_service, thumbnail_loader, parent=None):
+        super().__init__(parent)
+        self.music_service = music_service
+        self._thumbnail_loader = thumbnail_loader
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setObjectName("homeWidget")
+
+        self._container = QWidget()
+        self._container.setObjectName("homeContainer")
+        self._layout = QVBoxLayout(self._container)
+        self._layout.setContentsMargins(24, 24, 24, 24)
+        self._layout.setSpacing(24)
+        self.setWidget(self._container)
+
+        self._loading = QLabel("Loading your home...")
+        self._loading.setStyleSheet("color: #8f909b; font-size: 14px;")
+        self._loading.setAlignment(Qt.AlignCenter)
+        self._layout.addWidget(self._loading)
+
+    def refresh(self, sections: list):
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+        if not sections:
+            placeholder = QLabel("Sign in to see your personalized Home feed.")
+            placeholder.setStyleSheet("color: #8f909b; font-size: 14px;")
+            placeholder.setAlignment(Qt.AlignCenter)
+            self._layout.addWidget(placeholder)
+            return
+
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            section_title = section.get("title", "")
+            contents = section.get("contents", [])
+            if not contents or not isinstance(contents, list):
+                continue
+
+            title_lbl = QLabel(section_title)
+            title_lbl.setStyleSheet("color: #e4e1e8; font-size: 20px; font-weight: 700;")
+            self._layout.addWidget(title_lbl)
+
+            scroll_frame = QFrame()
+            scroll_frame.setFixedHeight(240)
+            scroll_layout = QHBoxLayout(scroll_frame)
+            scroll_layout.setContentsMargins(0, 0, 0, 0)
+            scroll_layout.setSpacing(12)
+
+            for item in contents:
+                if not isinstance(item, dict):
+                    continue
+                item_title = item.get("title", "")
+                item_sub = ""
+                artists = item.get("artists")
+                if isinstance(artists, list) and artists:
+                    item_sub = artists[0].get("name", "")
+                if not item_sub:
+                    item_sub = item.get("artist", "")
+                if not item_sub:
+                    item_sub = item.get("subtitle", "")
+                thumbnails = item.get("thumbnails", [])
+                thumb_url = ""
+                if isinstance(thumbnails, list) and thumbnails:
+                    last = thumbnails[-1]
+                    if isinstance(last, dict):
+                        thumb_url = last.get("url", "")
+                video_id = item.get("videoId", "") or item.get("playlistId", "")
+
+                card = _HomeCard(item_title, item_sub, thumb_url, video_id, self._thumbnail_loader)
+                card.clicked.connect(self._on_card_clicked)
+                scroll_layout.addWidget(card)
+
+            scroll_layout.addStretch()
+            self._layout.addWidget(scroll_frame)
+
+        self._layout.addStretch()
+
+    def _on_card_clicked(self, video_id: str):
+        self.track_selected.emit(video_id)
+
+
+class _ChartCard(QFrame):
+    clicked = Signal(str)
+
+    def __init__(self, title: str, subtitle: str, thumb_url: str, video_id: str, thumbnail_loader, parent=None):
+        super().__init__(parent)
+        self._video_id = video_id
+        self.setObjectName("musicCard")
+        self.setFixedSize(140, 185)
+        self.setCursor(Qt.PointingHandCursor)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.thumb = QLabel()
+        self.thumb.setFixedSize(140, 140)
+        self.thumb.setScaledContents(True)
+        self.thumb.setStyleSheet("background-color: #29292f; border-radius: 10px;")
+        layout.addWidget(self.thumb)
+
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet("color: #e4e1e8; font-size: 12px; font-weight: 600; padding: 0 4px;")
+        title_lbl.setFixedWidth(140)
+        title_lbl.setWordWrap(True)
+        layout.addWidget(title_lbl)
+
+        sub_lbl = QLabel(subtitle)
+        sub_lbl.setStyleSheet("color: #8f909b; font-size: 10px; padding: 0 4px;")
+        sub_lbl.setFixedWidth(140)
+        layout.addWidget(sub_lbl)
+
+        if thumb_url and thumbnail_loader:
+            thumbnail_loader.load(self.thumb, thumb_url)
+
+    def mousePressEvent(self, event):
+        if self._video_id:
+            self.clicked.emit(self._video_id)
+        super().mousePressEvent(event)
+
+
 # ---------------------------------------------------------------------------
 # Async thumbnail loader
 # ---------------------------------------------------------------------------
@@ -2048,7 +2415,7 @@ class DJMainWindow(QMainWindow):
         self.music_service = music_service
         self.auth_service = auth_service
 
-        self.setWindowTitle("QueNota? - Virtual Music Curator")
+        self.setWindowTitle(f"QueNota? - {self.auth_service.user_display_name}")
         self.setMinimumSize(1100, 720)
         self.setStyleSheet(VIBE_QSS)
 
@@ -2086,11 +2453,12 @@ class DJMainWindow(QMainWindow):
         content_row.addWidget(self.inner_stack, stretch=1)
         shell_layout.addLayout(content_row, stretch=1)
 
-        self.playback_bar = PlaybackBar()
+        self.playback_bar = PlaybackBar(self._thumbnail_loader)
         self.playback_bar.play_pause_requested.connect(self.toggle_playback_state)
         self.playback_bar.skip_requested.connect(self._on_bar_skip)
         self.playback_bar.back_requested.connect(self._on_bar_back)
         self.playback_bar.volume_changed.connect(self._on_bar_volume)
+        self.playback_bar.velocity_changed.connect(self._on_bar_speed)
         self.playback_bar.shuffle_requested.connect(self._on_bar_shuffle)
         self.playback_bar.repeat_requested.connect(self._on_bar_repeat)
         self.playback_bar.set_transport_enabled(False)
@@ -2121,17 +2489,22 @@ class DJMainWindow(QMainWindow):
         user_layout.setSpacing(10)
         user_layout.setContentsMargins(10, 8, 10, 8)
 
-        avatar = QFrame()
-        avatar.setFixedSize(36, 36)
-        avatar.setStyleSheet(
-            "background: qlineargradient(x1:0 y1:0, x2:1 y2:1,"
-            " stop:0 #5f74b7, stop:1 #fcb970); border-radius: 18px;"
+        self.sidebar_avatar = QLabel()
+        self.sidebar_avatar.setFixedSize(36, 36)
+        self.sidebar_avatar.setObjectName("sidebarAvatar")
+        self.sidebar_avatar.setScaledContents(True)
+        self.sidebar_avatar.setStyleSheet(
+            "QLabel#sidebarAvatar {"
+            " background-color: #2a2a32;"
+            " border-radius: 18px;"
+            "}"
         )
-        user_layout.addWidget(avatar)
+        self._apply_avatar_mask()
+        user_layout.addWidget(self.sidebar_avatar)
 
         user_col = QVBoxLayout()
         user_col.setSpacing(2)
-        self.sidebar_user = QLabel("QueNota? Curator")
+        self.sidebar_user = QLabel(self.auth_service.user_display_name)
         self.sidebar_user.setObjectName("labelBold")
         self.sidebar_user.setStyleSheet("color: #e4e1e8; font-size: 13px;")
         user_col.addWidget(self.sidebar_user)
@@ -2144,10 +2517,11 @@ class DJMainWindow(QMainWindow):
 
         self.nav_buttons = []
         nav_items = [
-            ("home", "Cabina"),
-            ("explore", "Discover"),
-            ("radio", "Stations"),
-            ("history", "History"),
+            ("home", "Inicio"),
+            ("radio", "QueNota?"),
+            ("explore", "Explorar"),
+            ("library_music", "Biblioteca"),
+            ("history", "Historial"),
         ]
         for icon_name, label in nav_items:
             btn = QPushButton()
@@ -2189,7 +2563,12 @@ class DJMainWindow(QMainWindow):
         sidebar_layout.addWidget(self.logout_btn)
 
     def _build_inner_stack(self):
+        self.home = HomeWidget(self.music_service, self._thumbnail_loader)
+        self.home.track_selected.connect(self.play_station)
+        self.inner_stack.addWidget(self.home)
+
         self.dj_booth = DJBoothWidget()
+        self.dj_booth._thumbnail_loader = self._thumbnail_loader
         self.dj_booth.start_session_requested.connect(self._on_start_session)
         self.inner_stack.addWidget(self.dj_booth)
 
@@ -2244,6 +2623,8 @@ class DJMainWindow(QMainWindow):
     @Slot()
     def _switch_to_app(self):
         self.sidebar_user.setText(self.auth_service.user_display_name)
+        self.llm_service.username = self.auth_service.user_display_name
+        self.setWindowTitle(f"QueNota? - {self.auth_service.user_display_name}")
         self.bottom_auth_label.setText("Signed in")
         self.outer_stack.setCurrentIndex(1)
         self.inner_stack.setCurrentIndex(0)
@@ -2252,6 +2633,17 @@ class DJMainWindow(QMainWindow):
         QTimer.singleShot(0, self.discover.refresh)
         QTimer.singleShot(0, self.library.refresh)
         QTimer.singleShot(0, self.history.refresh)
+
+        # load profile avatar from the API (async via thumbnail loader)
+        avatar_url = self.music_service.get_account_avatar()
+        if avatar_url:
+            self._thumbnail_loader.load(self.sidebar_avatar, avatar_url)
+
+        self._home_worker = _HomeWorker(self.music_service)
+        self._home_worker.data_loaded.connect(
+            lambda data: QTimer.singleShot(0, lambda: self.home.refresh(data))
+        )
+        self._home_worker.start()
 
         self._charts_worker = _ChartsWorker(self.music_service)
         self._playlists_worker = _PlaylistsWorker(self.music_service)
@@ -2271,9 +2663,26 @@ class DJMainWindow(QMainWindow):
         self._playlists_worker.start()
         self._history_worker.start()
 
+    @Slot(str, str)
+    def _on_user_info(self, name: str, avatar_url: str):
+        if name and name != "Oyente":
+            self.sidebar_user.setText(name)
+            self.llm_service.username = name
+            self.setWindowTitle(f"QueNota? - {name}")
+        if avatar_url:
+            self._thumbnail_loader.load(self.sidebar_avatar, avatar_url)
+
+    def _apply_avatar_mask(self):
+        from PySide6.QtGui import QPainterPath, QRegion
+        path = QPainterPath()
+        path.addEllipse(0, 0, 36, 36)
+        polygon = path.toFillPolygon().toPolygon()
+        region = QRegion(polygon)
+        self.sidebar_avatar.setMask(region)
+
     @Slot()
     def _on_new_session(self):
-        self._switch_nav(0)
+        self._switch_nav(1)
         self.dj_booth.reset_state()
         if self.worker_thread and self.worker_thread.isRunning():
             self.worker_thread.requestInterruption()
@@ -2293,7 +2702,9 @@ class DJMainWindow(QMainWindow):
     @Slot()
     def _on_logout_success(self):
         self.bottom_auth_label.setText("Signed out")
-        self.sidebar_user.setText("QueNota? Curator")
+        self.sidebar_user.setText(self.auth_service.user_display_name)
+        self.llm_service.username = self.auth_service.user_display_name
+        self.setWindowTitle(f"QueNota? - {self.auth_service.user_display_name}")
         self.playback_bar.reset()
         self.outer_stack.setCurrentIndex(0)
 
@@ -2303,13 +2714,16 @@ class DJMainWindow(QMainWindow):
             self.worker_thread.update_query(query)
             return
 
+        self.llm_service.username = self.auth_service.user_display_name
         self.worker_thread = DJWorkerThread(query, self.llm_service, self.music_service)
         self.music_service._worker_thread = self.worker_thread
-        self.worker_thread.status_changed.connect(self.dj_booth.on_status_changed)
         self.worker_thread.song_playing.connect(self.dj_booth.on_song_playing)
         self.worker_thread.song_playing.connect(self.playback_bar.on_track_loaded)
         self.worker_thread.log_message.connect(self.dj_booth.on_log_message)
         self.worker_thread.dj_speaking.connect(self.dj_booth.on_dj_speaking)
+        self.worker_thread.dj_commentary.connect(self.dj_booth.show_commentary)
+        self.worker_thread.dj_commentary_ready.connect(self.dj_booth.show_commentary)
+        self.worker_thread.user_info_loaded.connect(self._on_user_info)
         self.worker_thread.pause_state_changed.connect(self.playback_bar.on_play_state)
         self.worker_thread.track_finished.connect(self._on_track_finished)
         self.worker_thread.finished_signal.connect(self.dj_booth.on_session_finished)
@@ -2328,24 +2742,49 @@ class DJMainWindow(QMainWindow):
 
     @Slot()
     def toggle_playback_state(self):
-        self.music_service.toggle_pause()
+        print(f"[DEBUG] Signal received in UI: toggle_playback_state")
+        if self.worker_thread and self.worker_thread.isRunning():
+            self.music_service.toggle_pause()
 
     @Slot(str)
     def start_mood_session(self, mood_title: str):
-        self._switch_nav(0)
+        self._switch_nav(1)
         self.dj_booth.search_input.setText(mood_title)
         QTimer.singleShot(100, lambda: self.dj_booth._on_start())
 
     @Slot(str)
     def play_station(self, video_id: str):
-        self._switch_nav(0)
+        self._switch_nav(1)
         self.dj_booth.search_input.setText("")
         if self.worker_thread and self.worker_thread.isRunning():
-            self.worker_thread.skip_current_song()
-            QTimer.singleShot(200, lambda: self.worker_thread.update_query("station"))
+            self.worker_thread.play_video_id(video_id)
         else:
-            self.dj_booth.search_input.setPlaceholderText("Playing station track...")
-            self.dj_booth._on_start()
+            self.dj_booth.status_pill.setText("●  Loading track...")
+            stream_data = self.music_service.extract_stream_url(video_id)
+            if not stream_data:
+                self.dj_booth.status_pill.setText("●  Could not load this track.")
+                return
+            stream_data["video_id"] = video_id
+            self.llm_service.username = self.auth_service.user_display_name
+            self.worker_thread = DJWorkerThread("", self.llm_service, self.music_service)
+            self.music_service._worker_thread = self.worker_thread
+            self.worker_thread._next_video_id = video_id
+            self.worker_thread.song_playing.connect(self.dj_booth.on_song_playing)
+            self.worker_thread.song_playing.connect(self.playback_bar.on_track_loaded)
+            self.worker_thread.log_message.connect(self.dj_booth.on_log_message)
+            self.worker_thread.user_info_loaded.connect(self._on_user_info)
+            self.worker_thread.dj_commentary.connect(self.dj_booth.show_commentary)
+            self.worker_thread.dj_commentary_ready.connect(self.dj_booth.show_commentary)
+            self.worker_thread.dj_speaking.connect(self.dj_booth.on_dj_speaking)
+            self.worker_thread.pause_state_changed.connect(self.playback_bar.on_play_state)
+            self.worker_thread.track_finished.connect(self._on_track_finished)
+            self.worker_thread.finished_signal.connect(self.dj_booth.on_session_finished)
+            self.worker_thread.finished_signal.connect(
+                lambda: self.playback_bar.set_transport_enabled(False)
+            )
+            self.worker_thread.finished_signal.connect(self._on_worker_finished)
+            self.worker_thread.start()
+            self.playback_bar.set_transport_enabled(True)
 
     @Slot(str)
     def play_playlist(self, playlist_id: str):
@@ -2359,7 +2798,15 @@ class DJMainWindow(QMainWindow):
 
     @Slot(int)
     def _on_bar_volume(self, value: int):
-        self.music_service.set_volume(value)
+        print(f"[DEBUG] Signal received in UI: volume {value}")
+        if self.worker_thread and self.worker_thread.isRunning():
+            self.music_service.set_volume(value)
+
+    @Slot(float)
+    def _on_bar_speed(self, value: float):
+        print(f"[DEBUG] Signal received in UI: speed {value}")
+        if self.worker_thread and self.worker_thread.isRunning():
+            self.music_service.set_speed(value)
 
     @Slot()
     def _on_bar_shuffle(self):
@@ -2373,9 +2820,7 @@ class DJMainWindow(QMainWindow):
 
     @Slot()
     def _on_track_finished(self):
-        self.dj_booth.now_playing_title.setText("")
-        self.dj_booth.now_playing_artist.setText("")
-        self.dj_booth.status_label.setText("Track ended — preparing next...")
+        pass
 
     @Slot()
     def _on_bar_skip(self):

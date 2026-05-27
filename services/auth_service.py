@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from pathlib import Path
 
 import ytmusicapi
@@ -7,6 +8,26 @@ from PySide6.QtCore import QObject, Signal
 
 
 _BROWSER_FILE = "browser.json"
+
+
+def _init_with_timeout(*args, timeout=10):
+    result = [None]
+    exception = [None]
+
+    def target():
+        try:
+            result[0] = ytmusicapi.YTMusic(*args)
+        except Exception as e:
+            exception[0] = e
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError("ytmusicapi.YTMusic init timed out")
+    if exception[0]:
+        raise exception[0]
+    return result[0]
 
 
 class GoogleAuthService(QObject):
@@ -21,13 +42,26 @@ class GoogleAuthService(QObject):
         browser_path = self.filepath
         if os.path.exists(browser_path):
             try:
-                self._api = ytmusicapi.YTMusic(browser_path)
-                self._user_info = {"display_name": "Curator"}
+                self._api = _init_with_timeout(browser_path, timeout=10)
                 self._has_auth = True
+                self._refresh_user_name()
                 print("[AUTH] Loaded session from browser.json")
             except Exception as e:
                 print(f"❌ [AUTH SERVICE ERROR] {e}")
                 self._fallback_to_public()
+
+    def _fetch_user_name(self) -> str:
+        try:
+            if hasattr(self._api, 'get_account_info'):
+                info = self._api.get_account_info()
+                if info and isinstance(info, dict):
+                    return info.get("accountName") or info.get("channelName") or "Oyente"
+        except Exception:
+            pass
+        return "Oyente"
+
+    def _refresh_user_name(self):
+        self._user_info = {"display_name": self._fetch_user_name()}
 
     @property
     def is_authenticated(self) -> bool:
@@ -36,8 +70,8 @@ class GoogleAuthService(QObject):
     @property
     def user_display_name(self) -> str:
         if self._user_info:
-            return self._user_info.get("display_name", "Curator")
-        return "QueNota? Curator"
+            return self._user_info.get("display_name", "Oyente")
+        return "Oyente"
 
     @property
     def api(self):
@@ -89,8 +123,8 @@ class GoogleAuthService(QObject):
         except OSError:
             return False
         try:
-            self._api = ytmusicapi.YTMusic(browser_path)
-            self._user_info = {"display_name": "Curator"}
+            self._api = _init_with_timeout(browser_path, timeout=10)
+            self._refresh_user_name()
             self._has_auth = True
             return True
         except Exception as e:
@@ -111,8 +145,8 @@ class GoogleAuthService(QObject):
             print(f"[AUTH] No session file at {browser_path}")
             return False
         try:
-            self._api = ytmusicapi.YTMusic(browser_path)
-            self._user_info = {"display_name": "Curator"}
+            self._api = _init_with_timeout(browser_path, timeout=10)
+            self._refresh_user_name()
             self._has_auth = True
             print(f"[AUTH] Session restored from {browser_path}")
             return True
@@ -143,9 +177,9 @@ class GoogleAuthService(QObject):
             else:
                 ytmusicapi.setup(browser_path, clean)
 
-            self._api = ytmusicapi.YTMusic(browser_path)
+            self._api = _init_with_timeout(browser_path, timeout=10)
             self._api.get_library_playlists(limit=1)
-            self._user_info = {"display_name": "Curator"}
+            self._refresh_user_name()
             self._has_auth = True
             self.login_success.emit()
             return True

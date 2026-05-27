@@ -26,7 +26,7 @@ class YTMusicStreamer:
     _worker_thread = None
 
     def _call_worker(self, method_name: str, *args):
-        if self._worker_thread is not None:
+        if self._worker_thread is not None and self._worker_thread.isRunning():
             method = getattr(self._worker_thread, method_name, None)
             if method and callable(method):
                 return method(*args)
@@ -37,6 +37,9 @@ class YTMusicStreamer:
 
     def set_volume(self, value: int):
         self._call_worker("set_volume", value)
+
+    def set_speed(self, value: float):
+        self._call_worker("set_speed", value)
 
     def skip_next(self):
         self._call_worker("skip_current_song")
@@ -88,6 +91,7 @@ class YTMusicStreamer:
                         "stream_url": stream_url,
                         "title": meta_title,
                         "artist": meta_artist,
+                        "thumbnail": info_dict.get("thumbnail", ""),
                     }
                 print(f"[MUSIC-SERVICE] extract_stream_url({video_id}): no stream_url in yt-dlp result")
             return None
@@ -204,6 +208,46 @@ class YTMusicStreamer:
                 print(f"[MUSIC-SERVICE] get_user_playlists: auth error (public mode), returning empty")
             else:
                 print(f"[MUSIC-SERVICE ERROR] get_user_playlists: {e}")
+            return []
+
+    def get_account_name(self) -> str:
+        try:
+            if self.is_authenticated and hasattr(self._api, '_channel_id') and self._api._channel_id:
+                channel_id = self._api._channel_id
+                from ytmusicapi.mixins import account as account_mixin
+                info = None
+                if hasattr(self._api, 'get_account_info'):
+                    info = self._api.get_account_info()
+                if info and isinstance(info, dict):
+                    return info.get("accountName") or info.get("channelName") or "Oyente"
+                return "Oyente"
+            return "Oyente"
+        except Exception:
+            return "Oyente"
+
+    def get_account_avatar(self) -> str:
+        try:
+            if hasattr(self._api, 'get_account_info'):
+                info = self._api.get_account_info()
+                if info and isinstance(info, dict):
+                    avatars = info.get("avatar", [])
+                    if isinstance(avatars, list) and avatars:
+                        return avatars[0].get("url", "") if isinstance(avatars[0], dict) else ""
+                    elif isinstance(avatars, dict):
+                        return avatars.get("url", "")
+                    return ""
+            return ""
+        except Exception:
+            return ""
+
+    def get_home(self) -> list:
+        try:
+            home = self._api.get_home(limit=15)
+            if isinstance(home, list):
+                return home
+            return []
+        except Exception as e:
+            print(f"[MUSIC-SERVICE ERROR] get_home: {e}")
             return []
 
     def get_explore_charts(self) -> dict:
