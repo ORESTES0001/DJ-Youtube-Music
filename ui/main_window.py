@@ -4,7 +4,7 @@ import random
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QStackedWidget,
     QLabel, QPushButton, QLineEdit, QTextEdit, QFrame, QScrollArea,
-    QSlider, QSizePolicy, QDialog, QInputDialog,
+    QSlider, QSizePolicy, QDialog, QInputDialog, QListWidget,
 )
 from PySide6.QtCore import (
     Qt, Slot, Signal, QTimer, QSize, QByteArray, QThread, QObject, QUrl, Property,
@@ -726,86 +726,134 @@ class PlaybackBar(QFrame):
     velocity_changed = Signal(float)
     shuffle_requested = Signal()
     repeat_requested = Signal()
+    seek_requested = Signal(float)
 
     def __init__(self, thumbnail_loader, parent=None):
         super().__init__(parent)
         self._thumbnail_loader = thumbnail_loader
         self.setObjectName("playbackBar")
-        self.setFixedHeight(72)
+        self.setFixedHeight(96)
         self._paused = True
         self._shuffle_on = False
         self._repeat_on = False
+        self._seeking = False
+        self._duration = 0
         self._setup_ui()
 
+    @staticmethod
+    def _fmt_time(seconds: float) -> str:
+        m = int(seconds // 60)
+        s = int(seconds % 60)
+        return f"{m}:{s:02d}"
+
     def _setup_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 10, 16, 10)
-        layout.setSpacing(16)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Seek bar row ──
+        seek_row = QHBoxLayout()
+        seek_row.setContentsMargins(16, 2, 16, 0)
+        seek_row.setSpacing(8)
+
+        self.time_current = QLabel("0:00")
+        self.time_current.setStyleSheet("color: #8f909b; font-size: 11px; min-width: 32px;")
+        self.time_current.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        seek_row.addWidget(self.time_current)
+
+        self.seek_slider = QSlider(Qt.Horizontal)
+        self.seek_slider.setObjectName("velocitySlider")
+        self.seek_slider.setRange(0, 1000)
+        self.seek_slider.setValue(0)
+        self.seek_slider.sliderPressed.connect(self._on_seek_pressed)
+        self.seek_slider.sliderReleased.connect(self._on_seek_released)
+        self.seek_slider.sliderMoved.connect(self._on_seek_moved)
+        seek_row.addWidget(self.seek_slider, stretch=1)
+
+        self.time_total = QLabel("0:00")
+        self.time_total.setStyleSheet("color: #8f909b; font-size: 11px; min-width: 32px;")
+        seek_row.addWidget(self.time_total)
+
+        root.addLayout(seek_row)
+
+        # ── Controls row ──
+        controls = QHBoxLayout()
+        controls.setContentsMargins(16, 0, 16, 6)
+        controls.setSpacing(16)
 
         left = QHBoxLayout()
         left.setSpacing(12)
 
         self.cover_art = QFrame()
-        self.cover_art.setFixedSize(50, 50)
+        self.cover_art.setFixedSize(46, 46)
         self.cover_art.setStyleSheet(
             "background-color: qlineargradient(x1:0 y1:0, x2:1 y2:1,"
-            " stop:0 #5f74b7, stop:1 #b4c5ff); border-radius: 8px;"
+            " stop:0 #5f74b7, stop:1 #b4c5ff); border-radius: 6px;"
         )
         self._cover_label = QLabel(self.cover_art)
-        self._cover_label.setFixedSize(50, 50)
+        self._cover_label.setFixedSize(46, 46)
         self._cover_label.setScaledContents(True)
-        self._cover_label.setStyleSheet("background: transparent; border-radius: 8px;")
+        self._cover_label.setStyleSheet("background: transparent; border-radius: 6px;")
         left.addWidget(self.cover_art)
 
         info_col = QVBoxLayout()
-        info_col.setSpacing(2)
+        info_col.setSpacing(1)
         self.bar_title = QLabel("No track playing")
         self.bar_title.setObjectName("labelBold")
-        self.bar_title.setStyleSheet("color: #e4e1e8; font-size: 13px;")
+        self.bar_title.setStyleSheet("color: #e4e1e8; font-size: 12px;")
         info_col.addWidget(self.bar_title)
         self.bar_subtitle = QLabel("Ready")
         self.bar_subtitle.setObjectName("codeLog")
-        self.bar_subtitle.setStyleSheet("color: #8f909b; font-size: 11px;")
+        self.bar_subtitle.setStyleSheet("color: #8f909b; font-size: 10px;")
         info_col.addWidget(self.bar_subtitle)
         left.addLayout(info_col)
-        layout.addLayout(left, stretch=3)
+        controls.addLayout(left, stretch=3)
 
         center = QHBoxLayout()
         center.setSpacing(8)
         center.setAlignment(Qt.AlignCenter)
 
-        self.shuffle_btn = _icon_button("shuffle", 20, "#8f909b", "barIconBtn", "Shuffle")
+        self.shuffle_btn = _icon_button("shuffle", 18, "#8f909b", "barIconBtn", "Shuffle")
         self.shuffle_btn.clicked.connect(self._on_shuffle)
         center.addWidget(self.shuffle_btn)
 
-        self.btn_back = _icon_button("skip_previous", 22, "#c5c6d2", "barIconBtn", "Previous")
+        self.btn_back = _icon_button("skip_previous", 20, "#c5c6d2", "barIconBtn", "Previous")
         self.btn_back.clicked.connect(self.back_requested.emit)
         center.addWidget(self.btn_back)
 
         self.btn_play = QPushButton()
         self.btn_play.setObjectName("barPlayBtn")
-        self.btn_play.setFixedSize(36, 36)
-        self.btn_play.setIcon(QIcon(_svg_pixmap(ICONS["play_arrow"], 18, "#ffffff")))
-        self.btn_play.setIconSize(QSize(18, 18))
+        self.btn_play.setFixedSize(34, 34)
+        self.btn_play.setIcon(QIcon(_svg_pixmap(ICONS["play_arrow"], 16, "#ffffff")))
+        self.btn_play.setIconSize(QSize(16, 16))
         self.btn_play.clicked.connect(self._on_play_pause)
         self.btn_play.setCursor(Qt.PointingHandCursor)
         center.addWidget(self.btn_play)
 
-        self.btn_next = _icon_button("skip_next", 22, "#c5c6d2", "barIconBtn", "Next")
+        self.btn_next = _icon_button("skip_next", 20, "#c5c6d2", "barIconBtn", "Next")
         self.btn_next.clicked.connect(self.skip_requested.emit)
         center.addWidget(self.btn_next)
 
-        self.repeat_btn = _icon_button("repeat", 20, "#8f909b", "barIconBtn", "Repeat")
+        self.repeat_btn = _icon_button("repeat", 18, "#8f909b", "barIconBtn", "Repeat")
         self.repeat_btn.clicked.connect(self._on_repeat)
         center.addWidget(self.repeat_btn)
 
-        layout.addLayout(center, stretch=3)
+        controls.addLayout(center, stretch=3)
 
         right = QHBoxLayout()
-        right.setSpacing(12)
+        right.setSpacing(10)
         right.setAlignment(Qt.AlignRight)
 
-        vol_btn = _icon_button("volume_up", 18, "#8f909b", "", "Volume")
+        self.queue_btn = _icon_button("equalizer", 18, "#8f909b", "barIconBtn", "Playlist Queue")
+        self.queue_btn.setCheckable(True)
+        right.addWidget(self.queue_btn)
+
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.VLine)
+        sep2.setStyleSheet("background-color: #444650; max-width: 1px; max-height: 20px;")
+        right.addWidget(sep2)
+
+        vol_btn = _icon_button("volume_up", 16, "#8f909b", "", "Volume")
         vol_btn.setStyleSheet(
             "QPushButton { background: transparent; border: none; padding: 4px; }"
         )
@@ -815,33 +863,34 @@ class PlaybackBar(QFrame):
         self.volume_slider.setObjectName("volumeSlider")
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(80)
-        self.volume_slider.setFixedWidth(80)
+        self.volume_slider.setFixedWidth(70)
         self.volume_slider.valueChanged.connect(self._on_volume)
         right.addWidget(self.volume_slider)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.VLine)
-        sep.setStyleSheet("background-color: #444650; max-width: 1px; max-height: 24px;")
+        sep.setStyleSheet("background-color: #444650; max-width: 1px; max-height: 20px;")
         right.addWidget(sep)
 
         speed_header = QVBoxLayout()
-        speed_header.setSpacing(2)
+        speed_header.setSpacing(1)
         speed_header.setAlignment(Qt.AlignRight)
         speed_label = QLabel("SPEED")
         speed_label.setObjectName("codeLog")
-        speed_label.setStyleSheet("color: #8f909b; font-size: 9px; letter-spacing: 0.1em;")
+        speed_label.setStyleSheet("color: #8f909b; font-size: 8px; letter-spacing: 0.1em;")
         speed_header.addWidget(speed_label)
 
         self.speed_slider = QSlider(Qt.Horizontal)
         self.speed_slider.setObjectName("velocitySlider")
         self.speed_slider.setRange(50, 200)
         self.speed_slider.setValue(100)
-        self.speed_slider.setFixedWidth(80)
+        self.speed_slider.setFixedWidth(70)
         self.speed_slider.valueChanged.connect(self._on_speed)
         speed_header.addWidget(self.speed_slider)
         right.addLayout(speed_header)
 
-        layout.addLayout(right, stretch=3)
+        controls.addLayout(right, stretch=3)
+        root.addLayout(controls)
 
     def _on_play_pause(self):
         self.play_pause_requested.emit()
@@ -849,13 +898,13 @@ class PlaybackBar(QFrame):
     def _on_shuffle(self):
         self._shuffle_on = not self._shuffle_on
         color = "#b4c5ff" if self._shuffle_on else "#8f909b"
-        self.shuffle_btn.setIcon(QIcon(_svg_pixmap(ICONS["shuffle"], 20, color)))
+        self.shuffle_btn.setIcon(QIcon(_svg_pixmap(ICONS["shuffle"], 18, color)))
         self.shuffle_requested.emit()
 
     def _on_repeat(self):
         self._repeat_on = not self._repeat_on
         color = "#b4c5ff" if self._repeat_on else "#8f909b"
-        self.repeat_btn.setIcon(QIcon(_svg_pixmap(ICONS["repeat"], 20, color)))
+        self.repeat_btn.setIcon(QIcon(_svg_pixmap(ICONS["repeat"], 18, color)))
         self.repeat_requested.emit()
 
     def _on_volume(self, value: int):
@@ -865,17 +914,40 @@ class PlaybackBar(QFrame):
         speed = round(value / 100.0, 1)
         self.velocity_changed.emit(speed)
 
+    def _on_seek_pressed(self):
+        self._seeking = True
+
+    def _on_seek_released(self):
+        self._seeking = False
+        ratio = self.seek_slider.value() / 1000.0
+        if self._duration > 0:
+            self.seek_requested.emit(ratio * self._duration)
+
+    def _on_seek_moved(self, value: int):
+        ratio = value / 1000.0
+        if self._duration > 0:
+            cur = ratio * self._duration
+            self.time_current.setText(self._fmt_time(cur))
+
     def on_track_loaded(self, title: str, artist: str, thumb_url: str = ""):
         self.bar_title.setText(title or "No track playing")
         self.bar_subtitle.setText(artist or "Ready")
-        self.bar_title.setStyleSheet("color: #b4c5ff; font-size: 13px;")
+        self.bar_title.setStyleSheet("color: #b4c5ff; font-size: 12px;")
         if thumb_url and self._thumbnail_loader:
             self._thumbnail_loader.load(self._cover_label, thumb_url)
 
     def on_play_state(self, paused: bool):
         self._paused = paused
         icon_name = "play_arrow" if paused else "pause"
-        self.btn_play.setIcon(QIcon(_svg_pixmap(ICONS[icon_name], 18, "#ffffff")))
+        self.btn_play.setIcon(QIcon(_svg_pixmap(ICONS[icon_name], 16, "#ffffff")))
+
+    def on_time_updated(self, time_pos: float, duration: float):
+        self._duration = duration
+        if not self._seeking:
+            ratio = time_pos / duration if duration > 0 else 0
+            self.seek_slider.setValue(int(ratio * 1000))
+            self.time_current.setText(self._fmt_time(time_pos))
+            self.time_total.setText(self._fmt_time(duration))
 
     def on_velocity_update(self, count: int):
         pass
@@ -884,15 +956,20 @@ class PlaybackBar(QFrame):
         self.btn_back.setEnabled(enabled)
         self.btn_play.setEnabled(enabled)
         self.btn_next.setEnabled(enabled)
+        self.seek_slider.setEnabled(enabled)
 
     def reset(self):
         self.bar_title.setText("No track playing")
         self.bar_subtitle.setText("Ready")
-        self.bar_title.setStyleSheet("color: #e4e1e8; font-size: 13px;")
+        self.bar_title.setStyleSheet("color: #e4e1e8; font-size: 12px;")
         self.on_play_state(True)
         self.set_transport_enabled(False)
         self._cover_label.clear()
-        self._cover_label.setStyleSheet("background: transparent; border-radius: 8px;")
+        self._cover_label.setStyleSheet("background: transparent; border-radius: 6px;")
+        self.time_current.setText("0:00")
+        self.time_total.setText("0:00")
+        self.seek_slider.setValue(0)
+        self._duration = 0
         if self._shuffle_on:
             self._on_shuffle()
         if self._repeat_on:
@@ -2406,6 +2483,71 @@ class _ClickableRow(QFrame):
 
 
 # ---------------------------------------------------------------------------
+# Playlist Queue Panel
+# ---------------------------------------------------------------------------
+class PlaylistPanel(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("playlistPanel")
+        self.setFixedHeight(180)
+        self.setStyleSheet(
+            "QFrame#playlistPanel {"
+            " background-color: rgba(18, 18, 22, 0.85);"
+            " border-top: 1px solid rgba(255, 255, 255, 0.08);"
+            "}"
+        )
+        self.hide()
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(8)
+
+        header = QLabel("Up Next")
+        header.setStyleSheet(
+            "color: #b4c5ff; font-size: 13px; font-weight: 700;"
+            " letter-spacing: 0.05em; text-transform: uppercase;"
+        )
+        layout.addWidget(header)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setStyleSheet(
+            "QListWidget {"
+            " background-color: transparent;"
+            " border: none;"
+            " color: #e0e0e0;"
+            " font-size: 12px;"
+            "}"
+            "QListWidget::item {"
+            " padding: 10px;"
+            " color: #e0e0e0;"
+            " border-radius: 8px;"
+            " margin-bottom: 2px;"
+            "}"
+            "QListWidget::item:hover {"
+            " background-color: rgba(255, 255, 255, 0.05);"
+            "}"
+            "QListWidget::item:selected {"
+            " background-color: rgba(122, 140, 232, 0.2);"
+            " color: #7a8ce8;"
+            " font-weight: bold;"
+            "}"
+        )
+        layout.addWidget(self.list_widget, stretch=1)
+
+    def refresh(self, tracks: list):
+        self.list_widget.clear()
+        for i, track in enumerate(tracks):
+            title = track.get("title", "Unknown")
+            artist = track.get("artist", "")
+            text = f"{i + 1}. {title}"
+            if artist:
+                text += f"  —  {artist}"
+            self.list_widget.addItem(text)
+
+
+# ---------------------------------------------------------------------------
 # Main Window
 # ---------------------------------------------------------------------------
 class DJMainWindow(QMainWindow):
@@ -2453,6 +2595,9 @@ class DJMainWindow(QMainWindow):
         content_row.addWidget(self.inner_stack, stretch=1)
         shell_layout.addLayout(content_row, stretch=1)
 
+        self.playlist_panel = PlaylistPanel()
+        shell_layout.addWidget(self.playlist_panel)
+
         self.playback_bar = PlaybackBar(self._thumbnail_loader)
         self.playback_bar.play_pause_requested.connect(self.toggle_playback_state)
         self.playback_bar.skip_requested.connect(self._on_bar_skip)
@@ -2461,6 +2606,8 @@ class DJMainWindow(QMainWindow):
         self.playback_bar.velocity_changed.connect(self._on_bar_speed)
         self.playback_bar.shuffle_requested.connect(self._on_bar_shuffle)
         self.playback_bar.repeat_requested.connect(self._on_bar_repeat)
+        self.playback_bar.seek_requested.connect(self._on_bar_seek)
+        self.playback_bar.queue_btn.clicked.connect(self._toggle_playlist_panel)
         self.playback_bar.set_transport_enabled(False)
         shell_layout.addWidget(self.playback_bar)
 
@@ -2731,6 +2878,8 @@ class DJMainWindow(QMainWindow):
             lambda: self.playback_bar.set_transport_enabled(False)
         )
         self.worker_thread.finished_signal.connect(self._on_worker_finished)
+        self.worker_thread.time_updated.connect(self._on_time_updated)
+        self.worker_thread.queue_updated.connect(self._on_queue_updated)
         self.worker_thread.start()
         self.playback_bar.set_transport_enabled(True)
 
@@ -2783,6 +2932,8 @@ class DJMainWindow(QMainWindow):
                 lambda: self.playback_bar.set_transport_enabled(False)
             )
             self.worker_thread.finished_signal.connect(self._on_worker_finished)
+            self.worker_thread.time_updated.connect(self._on_time_updated)
+            self.worker_thread.queue_updated.connect(self._on_queue_updated)
             self.worker_thread.start()
             self.playback_bar.set_transport_enabled(True)
 
@@ -2829,3 +2980,25 @@ class DJMainWindow(QMainWindow):
     @Slot()
     def _on_bar_back(self):
         self.music_service.go_previous()
+
+    @Slot()
+    def _toggle_playlist_panel(self):
+        visible = self.playlist_panel.isVisible()
+        self.playlist_panel.setVisible(not visible)
+        color = "#b4c5ff" if not visible else "#8f909b"
+        self.playback_bar.queue_btn.setIcon(
+            QIcon(_svg_pixmap(ICONS["equalizer"], 18, color))
+        )
+
+    @Slot(float)
+    def _on_bar_seek(self, seconds: float):
+        if self.worker_thread and self.worker_thread.isRunning():
+            self.worker_thread.seek(seconds)
+
+    @Slot(float, float)
+    def _on_time_updated(self, time_pos: float, duration: float):
+        self.playback_bar.on_time_updated(time_pos, duration)
+
+    @Slot(list)
+    def _on_queue_updated(self, tracks: list):
+        self.playlist_panel.refresh(tracks)

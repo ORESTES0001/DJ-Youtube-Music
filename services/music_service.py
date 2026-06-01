@@ -117,7 +117,7 @@ class YTMusicStreamer:
 
     # ---- playback history ----
 
-    def record_playback(self, track_title: str, artist_name: str, user_id: int = None) -> None:
+    def record_playback(self, track_title: str, artist_name: str, user_id: int = None, video_id: str = None) -> None:
         session = get_session()
         try:
             entry = PlaybackHistory(
@@ -132,6 +132,23 @@ class YTMusicStreamer:
             session.rollback()
         finally:
             session.close()
+
+        # sync to official YouTube Music history
+        if video_id:
+            self.sync_playback_to_ytm(video_id)
+
+    def sync_playback_to_ytm(self, video_id: str) -> bool:
+        if not video_id or not self.is_authenticated:
+            return False
+        try:
+            song = self._api.get_song(video_id)
+            self._api.add_history_item(song)
+            return True
+        except Exception as e:
+            # fail gracefully — non-critical
+            if "access_token" not in str(e) and "400" not in str(e):
+                print(f"[MUSIC-SERVICE ERROR] sync_playback_to_ytm({video_id}): {e}")
+            return False
 
     # ---- YTM history ----
 

@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -19,7 +19,7 @@ RULES:
 
 FORMAT: You must output a valid JSON containing exactly these keys:
 {{
-  "razonamiento_interno": "Briefly explain your logic here first.",
+  "razonamiento_interno": "Strictly 1 or 2 short sentences explaining your logic.",
   "musica_elegida": "Artist Name - Song Title",
   "comentario_personalizado": "Hola {user}... (your presentation of the track)",
   "termino_busqueda_yt": "Keywords to search on YouTube"
@@ -47,28 +47,46 @@ class LocalLLMClient:
         self._username = name or "Oyente"
 
     def get_llm_response(
-        self, prompt: str, user_context: str = ""
+        self, prompt: str, user_context: str = "", timeout: int = 120,
+        avoid_list: List[str] = None,
     ) -> Optional[Dict[str, Any]]:
+        # truncate context to avoid 400 Bad Request
+        MAX_CONTEXT_CHARS = 2000
+        if len(user_context) > MAX_CONTEXT_CHARS:
+            user_context = user_context[:MAX_CONTEXT_CHARS] + "\n... (truncated)"
+
         system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
             user=self._username,
             user_context=user_context or "No recent history available.",
         )
+
+        avoid_block = ""
+        if avoid_list:
+            avoid_block = (
+                "\n\nCRITICAL AVOID LIST: You MUST NOT suggest any of the following tracks: "
+                f"{', '.join(avoid_list)}. Pick something different but related."
+            )
+
         user_content = (
             f"<system>\n{system_prompt}\n</system>\n\n"
-            f"<user>\nUSER INSTRUCTION: {prompt}\n"
+            f"<user>\nUSER INSTRUCTION: {prompt}{avoid_block}\n"
             f"Follow the RULES and FORMAT above. Think step by step in 'razonamiento_interno'. Output ONLY the JSON object.</user>"
         )
+
+        temp = 0.2
+        if avoid_list and len(avoid_list) > 2:
+            temp = 0.5
 
         payload = {
             "model": "local-model",
             "messages": [{"role": "user", "content": user_content}],
-            "temperature": 0.2,
-            "max_tokens": 1000,
+            "temperature": temp,
+            "max_tokens": 1024,
             "stream": False,
         }
 
         try:
-            response = requests.post(self.endpoint, json=payload, timeout=30)
+            response = requests.post(self.endpoint, json=payload, timeout=timeout)
             response.raise_for_status()
             choices = response.json().get("choices", [])
             if not choices:
@@ -80,7 +98,7 @@ class LocalLLMClient:
             print(f"[LLM ERROR] Connection failed to {self.endpoint}: {e}")
             return None
         except requests.exceptions.Timeout as e:
-            print(f"[LLM ERROR] Timeout after 30s: {e}")
+            print(f"[LLM ERROR] Timeout after {timeout}s: {e}")
             return None
         except requests.exceptions.RequestException as e:
             print(f"[LLM ERROR] Request failed: {e}")

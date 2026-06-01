@@ -15,6 +15,8 @@ from PySide6.QtCore import QThread, Signal
 
 from database.models import get_session, PlaybackHistory
 
+QUEUE_TARGET = 10
+
 
 class VoiceEngine:
     def __init__(self):
@@ -50,7 +52,9 @@ class DJWorkerThread(QThread):
     track_finished = Signal()
     shuffle_toggled = Signal(bool)
     repeat_toggled = Signal(bool)
-    user_info_loaded = Signal(str, str)  # username, avatar_url
+    user_info_loaded = Signal(str, str)
+    time_updated = Signal(float, float)
+    queue_updated = Signal(list)
 
     def __init__(self, initial_query: str, llm_service, music_service, parent=None):
         super().__init__(parent)
@@ -70,11 +74,13 @@ class DJWorkerThread(QThread):
         self._next_video_id = None
         self._track_ended = False
 
-        # non-blocking TTS thread
         self._tts_thread: Optional[threading.Thread] = None
-
-        # interruption event — set to abort current operation and restart loop
+        self._fill_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
+
+        # playback queue
+        self.playback_queue: List[dict] = []
+        self._queue_lock = threading.Lock()
 
         locale.setlocale(locale.LC_NUMERIC, "C")
         self.player = mpv.MPV(ytdl=True, video=False)
@@ -95,7 +101,6 @@ class DJWorkerThread(QThread):
         except ImportError:
             pass
 
-        # emit user info once at start
         name = self.music_service.get_account_name()
         avatar = self.music_service.get_account_avatar()
         self.user_info_loaded.emit(name, avatar)
@@ -118,7 +123,6 @@ class DJWorkerThread(QThread):
     # ---- Context builders ----
 
     def _get_user_context(self) -> str:
-        """Fetch 10 most recent tracks + top artists from local DB, return as structured JSON block."""
         session = get_session()
         tracks = []
         artist_counter = {}
@@ -139,7 +143,6 @@ class DJWorkerThread(QThread):
         finally:
             session.close()
 
-        # sort artists by frequency
         top_artists = sorted(artist_counter.items(), key=lambda x: -x[1])[:5]
         top_artists_list = [{"artist": a, "plays": c} for a, c in top_artists]
 
@@ -149,7 +152,7 @@ class DJWorkerThread(QThread):
         }
         return json.dumps(context, indent=2, ensure_ascii=False)
 
-    # ---- Voice helper (non-blocking) ----
+    # ---- Voice helper ----
 
     def _speak(self, voice_engine: VoiceEngine, text: str):
         if self.stop_event.is_set():
@@ -161,34 +164,150 @@ class DJWorkerThread(QThread):
         self._tts_thread = threading.Thread(target=_do_speak, daemon=True)
         self._tts_thread.start()
 
-    # ---- mpv playback ----
+    # ---- Volume crossfade ----
+
+    def _fade_volume(self, from_v: int, to_v: int, steps: int = 8, delay: float = 0.025):
+        for i in range(steps + 1):
+            if self.stop_event.is_set():
+                return
+            v = from_v + (to_v - from_v) * i // steps
+            self.player.volume = max(0, min(100, v))
+            self.msleep(int(delay * 1000))
+        self.player.volume = max(0, min(100, to_v))
+
+    # ---- Queue buffer filling (background) ----
+
+    def _fetch_one_recommendation(self, avoid_titles: list[str] = None) -> Optional[dict]:
+        if not self.current_query or not self.current_query.strip():
+            return None
+        user_context = self._get_user_context()
+        llm_result = self.llm_service.get_llm_response(
+            self.current_query, user_context=user_context, timeout=120,
+            avoid_list=avoid_titles,
+        )
+        if self.stop_event.is_set() or not llm_result:
+            return None
+        next_query = llm_result.get(
+            "termino_busqueda_yt",
+            llm_result.get("musica_elegida",
+            llm_result.get("siguiente_cancion", self.current_query)),
+        )
+        commentary = llm_result.get(
+            "comentario_personalizado",
+            llm_result.get("comentario_dj", ""),
+        ) or "Seguimos con el ritmo."
+        stream_data = self.music_service.search_and_extract(next_query)
+        if self.stop_event.is_set() or not stream_data:
+            return None
+        return {
+            "stream_data": stream_data,
+            "commentary": commentary,
+            "query": next_query,
+            "llm_result": llm_result,
+        }
+
+    def _fill_queue_buffer(self, count: int):
+        if self.stop_event.is_set():
+            return
+        added = 0
+        for _ in range(count):
+            if self.stop_event.is_set():
+                break
+            with self._queue_lock:
+                if len(self.playback_queue) >= QUEUE_TARGET:
+                    break
+                avoid_titles = [
+                    item["stream_data"].get("title", "")
+                    for item in self.playback_queue
+                ]
+            rec = self._fetch_one_recommendation(avoid_titles=avoid_titles)
+            if rec is None:
+                continue
+            with self._queue_lock:
+                self.playback_queue.append(rec)
+                self.current_query = rec["query"]
+            added += 1
+            self.queue_updated.emit(self._queue_snapshot())
+            time.sleep(1)  # brief rest between LLM calls
+        if added:
+            self.log_message.emit(f"[QUEUE] Added {added} tracks (total: {len(self.playback_queue)})")
+
+    def _queue_snapshot(self) -> list:
+        with self._queue_lock:
+            return [
+                {
+                    "title": item["stream_data"].get("title", "Track"),
+                    "artist": item["stream_data"].get("artist", "Artist"),
+                    "thumbnail": item["stream_data"].get("thumbnail", ""),
+                }
+                for item in self.playback_queue
+            ]
+
+    # ---- mpv playback with fade, time tracking ----
 
     def _play_with_mpv(self, stream_url: str):
         self._track_ended = False
+
+        if not stream_url:
+            print(f"[DJTRACE] _play_with_mpv: empty stream_url, aborting")
+            self.track_finished.emit()
+            return
+
+        print(f"[DJTRACE] _play_with_mpv: starting playback")
+        self.player.volume = 5
         try:
             self.player.play(stream_url)
         except Exception as e:
+            print(f"[DJTRACE] player.play() raised: {e}")
             self.log_message.emit(f"[PLAY ERROR] {e}")
             self.track_finished.emit()
             return
+        try:
+            self._fade_volume(5, self._volume, steps=10, delay=0.025)
+        except Exception as e:
+            print(f"[DJTRACE] _fade_volume raised: {e}")
+        self.player.volume = self._volume
 
         self.is_paused = bool(self.player.pause)
         self.pause_state_changed.emit(self.is_paused)
 
         while True:
             if self.isInterruptionRequested() or self.stop_event.is_set():
+                self._fade_volume(self._volume, 0)
                 self.player.stop()
                 return
             if self.skip_requested or self.user_updated_context:
                 self.skip_requested = False
                 self.back_activated = False
+                self._fade_volume(self._volume, 0)
                 self.player.stop()
                 break
             if self._track_ended:
                 self._track_ended = False
                 break
+
+            # Fallback: detect EOF via position vs duration
+            try:
+                tp = self.player.time_pos
+                dur = self.player.duration
+                if tp is not None and dur is not None and dur > 0 and tp >= dur - 1.0:
+                    self._track_ended = True
+                    continue
+            except Exception:
+                pass
+
+            # Emit time-pos / duration for seek bar
+            try:
+                tp = self.player.time_pos
+                dur = self.player.duration
+                if tp is not None and dur is not None:
+                    self.time_updated.emit(float(tp), float(dur))
+            except Exception:
+                pass
+
             self.msleep(200)
 
+        self.player.volume = self._volume
         self.track_finished.emit()
 
     # ---- Main loop ----
@@ -198,16 +317,88 @@ class DJWorkerThread(QThread):
             if self.isInterruptionRequested():
                 break
 
-            # if stop_event fired during last operation, restart the loop immediately
             if self.stop_event.is_set():
                 self.stop_event.clear()
+                self.skip_requested = False
+                self.user_updated_context = False
+                self.back_activated = False
+                print(f"[DJTRACE] stop_event cleared, restarting")
                 continue
 
-            llm_title = None
-            llm_artist = None
-            next_song_query = self.current_query
+            self.skip_requested = False
+            self.user_updated_context = False
 
+            # ── Path 1: Play from queue ──
+            with self._queue_lock:
+                if self.playback_queue:
+                    item = self.playback_queue.pop(0)
+                else:
+                    item = None
+            if item:
+                stream_data = item["stream_data"]
+                display_title = stream_data.get("title", "Track")
+                display_artist = stream_data.get("artist", "Artist")
+                dj_comment = item.get("commentary", "")
+                next_song_query = item.get("query") or f"{display_title} {display_artist}"
+                print(f"[DJTRACE] Path=QUEUE ({len(self.playback_queue)} remaining): {display_title} - {display_artist}")
+
+                if self.stop_event.is_set():
+                    self.stop_event.clear()
+                    continue
+
+                if dj_comment:
+                    self.dj_speaking.emit(dj_comment)
+                    self.dj_commentary.emit(dj_comment)
+                    self.dj_commentary_ready.emit(dj_comment)
+                    self.status_changed.emit("DJ speaking...")
+                    self._speak(voice_engine, dj_comment)
+
+                self.song_playing.emit(display_title, display_artist, stream_data.get("thumbnail", ""))
+                self.status_changed.emit(f"Now Playing: {display_title} - {display_artist}")
+                self.log_message.emit(f"Now playing: {display_title} - {display_artist}")
+
+                self.music_service.record_playback(
+                    display_title, display_artist,
+                    video_id=stream_data.get("video_id", ""),
+                )
+
+                self._play_with_mpv(stream_data["stream_url"])
+                print(f"[DJTRACE] _play_with_mpv returned")
+
+                # Update query to keep the recommendation chain alive
+                self.current_query = next_song_query
+
+                # Refill queue in background (keep buffer at QUEUE_TARGET)
+                if not self._fill_thread or not self._fill_thread.is_alive():
+                    self._fill_thread = threading.Thread(
+                        target=self._fill_queue_buffer, args=(1,), daemon=True
+                    )
+                    self._fill_thread.start()
+                    self.queue_updated.emit(self._queue_snapshot())
+
+                # Wait briefly for bg fill to add the next track (avoids gap)
+                if not self.playback_queue:
+                    for _ in range(30):
+                        if self.stop_event.is_set() or self.isInterruptionRequested():
+                            break
+                        if self.playback_queue:
+                            break
+                        self.msleep(500)
+
+                self.log_message.emit("Song finished. Moving to next turn...")
+
+                if not self.history_stack or self.history_stack[-1] != self.current_query:
+                    self.history_stack.append(self.current_query)
+                if len(self.history_stack) > 100:
+                    self.history_stack = self.history_stack[-100:]
+
+                if self.stop_event.is_set():
+                    self.stop_event.clear()
+                continue
+
+            # ── Path 2: Direct video ID (seed queue with this track) ──
             if self._next_video_id:
+                print(f"[DJTRACE] Path=SEED_DIRECT_VIDEO")
                 video_id = self._next_video_id
                 self._next_video_id = None
                 if self.stop_event.is_set():
@@ -216,45 +407,69 @@ class DJWorkerThread(QThread):
                 stream_data = self.music_service.extract_stream_url(video_id)
                 if stream_data:
                     stream_data["video_id"] = video_id
-                display_title = stream_data.get("title", "Track") if stream_data else "Track"
-                display_artist = stream_data.get("artist", "Artist") if stream_data else "Artist"
-                dj_comment = ""
-                self.log_message.emit(f"Playing direct video: {display_title} - {display_artist}")
-            else:
-                if self.stop_event.is_set():
-                    self.stop_event.clear()
+                    display_title = stream_data.get("title", "Track")
+                    display_artist = stream_data.get("artist", "Artist")
+                    seed_query = f"{display_title} {display_artist}"
+                    self.current_query = seed_query
+                    with self._queue_lock:
+                        self.playback_queue.clear()
+                        self.playback_queue.append({
+                            "stream_data": stream_data,
+                            "commentary": "",
+                            "query": seed_query,
+                        })
+                    self.queue_updated.emit(self._queue_snapshot())
+                    self.log_message.emit(f"Seeding queue: {display_title} - {display_artist} (+ {QUEUE_TARGET - 1} more loading)")
+                    threading.Thread(
+                        target=self._fill_queue_buffer, args=(QUEUE_TARGET - 1,), daemon=True
+                    ).start()
+                    self.msleep(100)
                     continue
-
-                user_context = self._get_user_context()
-                self.log_message.emit(f"--- Context -> '{self.current_query}' ---")
-                self.status_changed.emit("Consulting the DJ AI...")
-
-                llm_result = self.llm_service.get_llm_response(
-                    self.current_query, user_context=user_context
-                )
-
-                # after LLM call — check if interrupted
-                if self.stop_event.is_set():
-                    self.stop_event.clear()
-                    continue
-
-                if llm_result:
-                    dj_comment = llm_result.get(
-                        "comentario_personalizado",
-                        llm_result.get("comentario_dj", ""),
-                    ) or f"Seguimos con el ritmo. Ahora viene algo de {self.current_query}."
-                    next_song_query = llm_result.get(
-                        "termino_busqueda_yt",
-                        llm_result.get("musica_elegida",
-                        llm_result.get("siguiente_cancion", self.current_query)),
-                    )
-                    llm_title = llm_result.get("musica_elegida", next_song_query)
-                    llm_artist = llm_result.get("artista")
                 else:
-                    dj_comment = "Sintonizando la mejor musica en control local. Disfruta el siguiente tema."
-                    next_song_query = self.current_query
-                    llm_title = None
-                    llm_artist = None
+                    self.log_message.emit(f"Could not load video {video_id}")
+                    self.msleep(3000)
+                    continue
+
+            # ── Path 3: First run — consult LLM + search (seed queue) ──
+            # Double-check queue is still empty (bg fill might have caught up)
+            with self._queue_lock:
+                if self.playback_queue:
+                    self.msleep(100)
+                    continue
+
+            print(f"[DJTRACE] Path=SEED_LLM query='{self.current_query}'")
+            if self.stop_event.is_set():
+                self.stop_event.clear()
+                continue
+
+            if not self.current_query or not self.current_query.strip():
+                self.msleep(500)
+                continue
+
+            user_context = self._get_user_context()
+            self.log_message.emit(f"--- Context -> '{self.current_query}' ---")
+            self.status_changed.emit("Consulting the DJ AI...")
+
+            llm_result = self.llm_service.get_llm_response(
+                self.current_query, user_context=user_context
+            )
+
+            if self.stop_event.is_set():
+                self.stop_event.clear()
+                continue
+
+            if llm_result:
+                next_query = llm_result.get(
+                    "termino_busqueda_yt",
+                    llm_result.get("musica_elegida",
+                    llm_result.get("siguiente_cancion", self.current_query)),
+                )
+                dj_comment = llm_result.get(
+                    "comentario_personalizado",
+                    llm_result.get("comentario_dj", ""),
+                ) or f"Seguimos con el ritmo. Ahora viene algo de {self.current_query}."
+                llm_title = llm_result.get("musica_elegida", next_query)
+                llm_artist = llm_result.get("artista")
 
                 self.dj_speaking.emit(dj_comment)
                 self.dj_commentary.emit(dj_comment)
@@ -267,60 +482,65 @@ class DJWorkerThread(QThread):
                     continue
 
                 self.status_changed.emit("Searching for the next track...")
-                stream_data = self.music_service.search_and_extract(next_song_query)
+                stream_data = self.music_service.search_and_extract(next_query)
 
                 if self.stop_event.is_set():
                     self.stop_event.clear()
                     continue
 
                 if stream_data:
-                    display_title = stream_data.get("title") or (llm_title or next_song_query)
+                    display_title = stream_data.get("title") or (llm_title or next_query)
                     display_artist = stream_data.get("artist") or (llm_artist or "Unknown Artist")
+                    with self._queue_lock:
+                        self.playback_queue.clear()
+                        self.playback_queue.append({
+                            "stream_data": stream_data,
+                            "commentary": dj_comment,
+                            "query": next_query,
+                        })
+                    self.current_query = next_query
+                    self.queue_updated.emit(self._queue_snapshot())
+                    threading.Thread(
+                        target=self._fill_queue_buffer, args=(QUEUE_TARGET - 1,), daemon=True
+                    ).start()
+                    self.msleep(100)
+                    continue
+                else:
+                    self.log_message.emit(f"No results for '{next_query}', retrying...")
+                    self.msleep(3000)
+                    continue
+            else:
+                # LLM failed — fallback to raw search
+                dj_comment = "Sintonizando la mejor musica en control local. Disfruta el siguiente tema."
+                self.dj_commentary.emit(dj_comment)
+                self.dj_commentary_ready.emit(dj_comment)
+                self.status_changed.emit("Searching for the next track...")
+                stream_data = self.music_service.search_and_extract(self.current_query)
 
-            if stream_data:
                 if self.stop_event.is_set():
                     self.stop_event.clear()
                     continue
 
-                thumb_url = stream_data.get("thumbnail", "")
-                self.song_playing.emit(display_title, display_artist, thumb_url)
-                self.status_changed.emit(f"Now Playing: {display_title} - {display_artist}")
-                self.log_message.emit(f"Now playing: {display_title} - {display_artist}")
-
-                self.music_service.record_playback(display_title, display_artist)
-                self._play_with_mpv(stream_data["stream_url"])
-
-                self.log_message.emit("Song finished. Moving to next turn...")
-            else:
-                if self.stop_event.is_set():
-                    self.stop_event.clear()
+                if stream_data:
+                    display_title = stream_data.get("title", self.current_query)
+                    display_artist = stream_data.get("artist", "Unknown Artist")
+                    with self._queue_lock:
+                        self.playback_queue.clear()
+                        self.playback_queue.append({
+                            "stream_data": stream_data,
+                            "commentary": dj_comment,
+                            "query": self.current_query,
+                        })
+                    self.queue_updated.emit(self._queue_snapshot())
+                    threading.Thread(
+                        target=self._fill_queue_buffer, args=(QUEUE_TARGET - 1,), daemon=True
+                    ).start()
+                    self.msleep(100)
                     continue
-                self.log_message.emit(
-                    f"No song found for query '{next_song_query}'. Retrying..."
-                )
-                self.msleep(3000)
-
-            if self.stop_event.is_set():
-                self.stop_event.clear()
-                continue
-
-            if not self.history_stack or self.history_stack[-1] != self.current_query:
-                self.history_stack.append(self.current_query)
-            if len(self.history_stack) > 100:
-                self.history_stack = self.history_stack[-100:]
-
-            if self.back_activated:
-                self.back_activated = False
-            elif self.user_updated_context:
-                self.user_updated_context = False
-            else:
-                self.current_query = next_song_query
-
-        self.status_changed.emit("DJ Session Complete!")
-        self.log_message.emit("The DJ set has ended. Start a new session!")
-        self.is_paused = False
-        self.pause_state_changed.emit(False)
-        self.finished_signal.emit()
+                else:
+                    self.log_message.emit(f"No song found for '{self.current_query}'. Retrying...")
+                    self.msleep(3000)
+                    continue
 
     # ---- External controls ----
 
@@ -372,3 +592,9 @@ class DJWorkerThread(QThread):
             self.stop_event.set()
             return True
         return False
+
+    def seek(self, position_seconds: float):
+        try:
+            self.player.time_pos = position_seconds
+        except Exception:
+            pass
